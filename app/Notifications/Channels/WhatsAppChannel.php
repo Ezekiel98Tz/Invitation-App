@@ -2,9 +2,11 @@
 
 namespace App\Notifications\Channels;
 
+use App\Delivery\TransportResolver;
 use App\Models\InvitationDelivery;
+use App\Support\DeliveryLab;
 use Illuminate\Notifications\Notification;
-use Illuminate\Support\Facades\Http;
+use RuntimeException;
 
 class WhatsAppChannel
 {
@@ -27,36 +29,46 @@ class WhatsAppChannel
             return;
         }
 
-        $endpoint = config('invitations.whatsapp.endpoint');
-        $token = config('invitations.whatsapp.token');
-        $sender = config('invitations.whatsapp.sender');
-
-        if (! $endpoint) {
+        // Delivery Lab guard: never send to a non-allow-listed test recipient.
+        if (! DeliveryLab::isAllowed($to)) {
             return;
         }
 
-        $request = Http::asJson();
+        $delivery = $this->deliveryRow($payload['delivery_id'] ?? null);
 
-        if ($token) {
-            $request = $request->withToken($token);
-        }
-
-        $response = $request->post($endpoint, [
+        $result = app(TransportResolver::class)->forChannel('whatsapp')->send('whatsapp', [
             'to' => $to,
             'message' => $message,
-            'sender' => $sender,
-        ])->throw();
+            'sender' => config('invitations.whatsapp.sender'),
+        ]);
 
-        $deliveryId = $payload['delivery_id'] ?? null;
+        if ($result->accepted) {
+            $delivery?->recordAccepted($result->referenceId, $result->httpStatus, $result->meta);
 
-        if (is_int($deliveryId) || (is_string($deliveryId) && ctype_digit($deliveryId))) {
-            $messageId = $response->json('message_id') ?? $response->json('id') ?? null;
-
-            InvitationDelivery::whereKey((int) $deliveryId)->update([
-                'status' => 'sent',
-                'sent_at' => now(),
-                'provider_message_id' => $messageId ? (string) $messageId : null,
-            ]);
+            return;
         }
+
+        if ($result->reason === 'not_configured') {
+            // No endpoint configured for a live provider: behave as before (no-op).
+            return;
+        }
+
+        $delivery?->recordFailure(
+            $result->reason ?? 'provider_error',
+            $result->error ?? 'The message could not be sent.',
+            $result->httpStatus,
+            $result->meta,
+        );
+
+        throw new RuntimeException('Message delivery failed.');
+    }
+
+    private function deliveryRow(mixed $deliveryId): ?InvitationDelivery
+    {
+        if (! (is_int($deliveryId) || (is_string($deliveryId) && ctype_digit($deliveryId)))) {
+            return null;
+        }
+
+        return InvitationDelivery::find((int) $deliveryId);
     }
 }

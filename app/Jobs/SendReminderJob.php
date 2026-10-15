@@ -38,8 +38,19 @@ class SendReminderJob implements ShouldQueue
             return;
         }
 
-        $notification = new ReminderNotification($guest->event, $guest->invite_url);
+        $notification = new ReminderNotification($guest->event, $guest->invite_url_absolute);
         $channels = $notification->via($guest);
+
+        if ($channels === []) {
+            // No configured channel is available, or the Delivery Lab blocked
+            // this recipient. Do not send and do not mark the guest as reminded.
+            return;
+        }
+
+        // A queue retry reuses the rows created by the first attempt; a
+        // deliberate new reminder (reminded_at reset) creates new rows.
+        $reuseExisting = $this->attempts() > 1;
+        $pending = [];
 
         foreach ($channels as $channel) {
             $mapped = match ($channel) {
@@ -53,37 +64,47 @@ class SendReminderJob implements ShouldQueue
                 continue;
             }
 
-            $delivery = InvitationDelivery::create([
-                'guest_id' => $guest->id,
-                'kind' => 'reminder',
-                'channel' => $mapped,
-                'status' => 'queued',
-            ]);
+            $delivery = InvitationDelivery::openFor($guest->id, 'reminder', $mapped, $reuseExisting);
 
+            if ($delivery->isCompleted()) {
+                continue;
+            }
+
+            $pending[] = $mapped;
             $notification->setDeliveryId($mapped, $delivery->id);
         }
+
+        if ($pending === []) {
+            $guest->forceFill(['reminded_at' => now()])->save();
+
+            return;
+        }
+
+        $notification->onlyChannels($pending);
 
         try {
             $guest->notify($notification);
 
-            if (in_array('mail', $channels, true)) {
+            if (in_array('mail', $pending, true)) {
                 $mailId = $notification->getDeliveryId('mail');
 
                 if ($mailId) {
                     InvitationDelivery::whereKey($mailId)->update([
                         'status' => 'sent',
                         'sent_at' => now(),
+                        'error' => null,
                     ]);
                 }
             }
         } catch (Throwable $e) {
+            // Sanitized: never store raw provider text or message contents.
             InvitationDelivery::where('guest_id', $guest->id)
                 ->where('kind', 'reminder')
                 ->where('status', 'queued')
                 ->update([
                     'status' => 'failed',
                     'failed_at' => now(),
-                    'error' => $e->getMessage(),
+                    'error' => 'The reminder could not be sent.',
                 ]);
 
             throw $e;

@@ -37,8 +37,8 @@ class SendDeliveryJob implements ShouldQueue
         }
 
         $notification = match ($this->kind) {
-            'invitation' => new InvitationNotification($guest->event, $guest->invite_url),
-            'reminder' => new ReminderNotification($guest->event, $guest->invite_url),
+            'invitation' => new InvitationNotification($guest->event, $guest->invite_url_absolute),
+            'reminder' => new ReminderNotification($guest->event, $guest->invite_url_absolute),
             default => null,
         };
 
@@ -48,13 +48,38 @@ class SendDeliveryJob implements ShouldQueue
 
         $notification->onlyChannels([$this->channel]);
 
-        $delivery = InvitationDelivery::create([
-            'guest_id' => $guest->id,
-            'kind' => $this->kind,
-            'channel' => $this->channel,
-            'status' => 'queued',
-            'meta' => $this->retryOf ? ['retry_of' => $this->retryOf] : null,
-        ]);
+        // Skip when the channel is not configured, or the Delivery Lab blocked it.
+        if ($notification->via($guest) === []) {
+            return;
+        }
+
+        // A queue retry reuses the row created by the first attempt so an
+        // explicit retry never creates duplicate records.
+        $delivery = null;
+
+        if ($this->attempts() > 1) {
+            $delivery = InvitationDelivery::query()
+                ->where('guest_id', $guest->id)
+                ->where('kind', $this->kind)
+                ->where('channel', $this->channel)
+                ->latest('id')
+                ->first();
+        }
+
+        if (! $delivery) {
+            $delivery = InvitationDelivery::create([
+                'guest_id' => $guest->id,
+                'kind' => $this->kind,
+                'channel' => $this->channel,
+                'status' => 'queued',
+                'meta' => $this->retryOf ? ['retry_of' => $this->retryOf] : null,
+            ]);
+        }
+
+        if ($delivery->isCompleted()) {
+            // Already accepted/delivered: never resend a completed delivery.
+            return;
+        }
 
         $notification->setDeliveryId($this->channel, $delivery->id);
 
@@ -62,17 +87,15 @@ class SendDeliveryJob implements ShouldQueue
             $guest->notify($notification);
 
             if ($this->channel === 'mail') {
-                InvitationDelivery::whereKey($delivery->id)->update([
-                    'status' => 'sent',
-                    'sent_at' => now(),
-                ]);
+                $delivery->forceFill(['status' => 'sent', 'sent_at' => now(), 'error' => null])->save();
             }
         } catch (Throwable $e) {
-            InvitationDelivery::whereKey($delivery->id)->update([
+            // Sanitized: never store raw provider text or message contents.
+            $delivery->forceFill([
                 'status' => 'failed',
                 'failed_at' => now(),
-                'error' => $e->getMessage(),
-            ]);
+                'error' => 'The delivery could not be sent.',
+            ])->save();
 
             throw $e;
         }

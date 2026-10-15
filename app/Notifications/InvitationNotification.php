@@ -5,6 +5,7 @@ namespace App\Notifications;
 use App\Models\Event;
 use App\Notifications\Channels\SmsChannel;
 use App\Notifications\Channels\WhatsAppChannel;
+use App\Support\DeliveryLab;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
@@ -97,7 +98,7 @@ class InvitationNotification extends Notification implements ShouldQueue
             }
         }
 
-        return array_values(array_unique($channels));
+        return DeliveryLab::filterChannels($notifiable, array_values(array_unique($channels)));
     }
 
     /**

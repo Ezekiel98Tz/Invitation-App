@@ -35,7 +35,7 @@ class InvitationController extends Controller
             $guest->setRelation('event', $event);
         }
 
-        $notification = new InvitationNotification($event, $guest->invite_url);
+        $notification = new InvitationNotification($event, $guest->invite_url_absolute);
 
         return response()->json([
             'event_id' => $event->id,

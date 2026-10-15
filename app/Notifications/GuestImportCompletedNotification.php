@@ -19,6 +19,7 @@ class GuestImportCompletedNotification extends Notification implements ShouldQue
         public Event $event,
         public int $created,
         public int $skipped,
+        public int $failed = 0,
     ) {}
 
     /**
@@ -36,11 +37,17 @@ class GuestImportCompletedNotification extends Notification implements ShouldQue
      */
     public function toMail(object $notifiable): MailMessage
     {
-        return (new MailMessage)
+        $mail = (new MailMessage)
             ->subject('Guest import completed: '.$this->event->title)
             ->line('Guest import completed for event: '.$this->event->title)
             ->line('Created: '.$this->created)
             ->line('Skipped: '.$this->skipped);
+
+        if ($this->failed > 0) {
+            $mail->line('Not imported (email/phone matched different contacts): '.$this->failed);
+        }
+
+        return $mail;
     }
 
     /**
@@ -54,6 +61,7 @@ class GuestImportCompletedNotification extends Notification implements ShouldQue
             'event_id' => $this->event->id,
             'created' => $this->created,
             'skipped' => $this->skipped,
+            'failed' => $this->failed,
         ];
     }
 }

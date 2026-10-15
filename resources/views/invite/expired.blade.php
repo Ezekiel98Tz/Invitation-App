@@ -5,7 +5,7 @@
             This invitation is no longer available.
         </p>
         <p class="mt-4 text-sm text-gray-600">
-            {{ $guest->event->title }}
+            {{ $guest->event?->title ?? 'This event is no longer available.' }}
         </p>
     </div>
 </x-guest-layout>

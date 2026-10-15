@@ -22,6 +22,8 @@ class ReportController extends Controller
             ->where('user_id', $ownerId)
             ->withCount([
                 'guests as guests_total',
+                'guests as guests_accepted' => fn ($q) => $q->where('status', 'accepted'),
+                'guests as guests_declined' => fn ($q) => $q->where('status', 'declined'),
                 'guests as guests_responded' => fn ($q) => $q->whereIn('status', ['accepted', 'declined']),
             ])
             ->orderByDesc('event_start')
@@ -37,6 +39,8 @@ class ReportController extends Controller
                     'event_start' => $event->event_start?->toDateTimeString(),
                     'response_rate' => $rate,
                     'guests_total' => $total,
+                    'guests_accepted' => (int) $event->guests_accepted,
+                    'guests_declined' => (int) $event->guests_declined,
                     'guests_responded' => $responded,
                 ];
             });
@@ -50,6 +54,15 @@ class ReportController extends Controller
     public function export(Request $request, Event $event)
     {
         $this->authorize('view', $event);
+
+        // XLSX is a ZIP container and OpenSpout requires ZipArchive.
+        if (! extension_loaded('zip')) {
+            return response()->json(['message' => 'XLSX export requires the PHP zip extension.'], 503);
+        }
+
+        // Ensure the export directory exists before OpenSpout opens the file
+        // (fopen() throws an IOException when the parent directory is missing).
+        Storage::makeDirectory('exports');
 
         $exportPath = 'exports/report-'.$event->id.'-'.Str::uuid().'.xlsx';
         $fullPath = Storage::path($exportPath);

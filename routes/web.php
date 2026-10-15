@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\ProfileController;
+use App\Http\Controllers\SpaController;
 use App\Http\Controllers\InviteController;
 use App\Http\Controllers\Admin\EventController as AdminEventController;
 use App\Http\Controllers\Admin\GuestController as AdminGuestController;
@@ -8,27 +9,19 @@ use App\Http\Controllers\Admin\InvitationController as AdminInvitationController
 use App\Http\Controllers\Admin\ReportController as AdminReportController;
 use App\Http\Controllers\Admin\AuditLogController as AdminAuditLogController;
 use App\Http\Controllers\Admin\StaffController as AdminStaffController;
-use App\Http\Controllers\Webhooks\DeliveryWebhookController;
 use App\Http\Controllers\StaffInviteController;
-use App\Models\Event;
-use Illuminate\Support\Facades\Gate;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
-Route::get('/', function () {
-    return view('welcome');
-});
-
-Route::get('/dashboard', function () {
-    return view('dashboard');
-})->middleware(['auth', 'verified'])->name('dashboard');
+// The React SPA is the default application entry point.
+Route::get('/', SpaController::class)->name('home');
 
 Route::middleware(['auth', 'verified'])->group(function () {
-    Route::get('/events/{event}', function (Event $event) {
-        Gate::authorize('view', $event);
+    // React-owned application routes (client router handles the view).
+    Route::get('/dashboard', SpaController::class)->name('dashboard');
+    Route::get('/events/{event}', SpaController::class)->name('ui.events.show');
 
-        return view('admin.events.show', ['event' => $event]);
-    })->name('ui.events.show');
-
+    // Legacy Blade pages retained for backward compatibility.
     Route::get('/audit-logs', function () {
         return view('admin.audit-logs');
     })->name('ui.audit-logs');
@@ -47,6 +40,7 @@ Route::middleware('auth')->group(function () {
 });
 
 require __DIR__.'/auth.php';
+require __DIR__.'/api.php';
 
 Route::middleware('throttle:invite-token')->group(function () {
     Route::get('/invite/{token}', [InviteController::class, 'show'])->name('invites.show');
@@ -90,8 +84,28 @@ Route::middleware('auth')->prefix('admin')->group(function () {
     Route::post('staff/invite', [AdminStaffController::class, 'invite'])->name('admin.staff.invite');
 });
 
-Route::post('/webhooks/delivery/{channel}', [DeliveryWebhookController::class, 'store'])->name('webhooks.delivery.store');
-
 Route::middleware('auth')->group(function () {
     Route::post('/staff/invites/{token}/accept', [StaffInviteController::class, 'accept'])->name('staff-invites.accept');
 });
+
+// Backwards compatibility for the previous SPA mount point (/app/...).
+// React now lives at the site root, so redirect old URLs there.
+Route::get('/app/{any?}', function (?string $any = null) {
+    return redirect('/'.ltrim((string) $any, '/'));
+})->where('any', '.*')->name('spa.legacy');
+
+// SPA fallback: serve the React shell for client-side routes that have no
+// server route (e.g. /events/1/invitation, /e/{token}). It only runs when no
+// other route matched, and it explicitly refuses to swallow API, invitation,
+// health or non-GET requests so real endpoints are never intercepted.
+Route::fallback(function (Request $request) {
+    if (! $request->isMethod('GET') && ! $request->isMethod('HEAD')) {
+        abort(404);
+    }
+
+    if ($request->is('api', 'api/*', 'invite', 'invite/*', 'up', 'app', 'app/*')) {
+        abort(404);
+    }
+
+    return app(SpaController::class)();
+})->name('spa.fallback');

@@ -10,7 +10,6 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Str;
-use SimpleSoftwareIO\QrCode\Facades\QrCode;
 
 class Guest extends Model
 {
@@ -27,6 +26,19 @@ class Guest extends Model
 
     protected $guarded = [
         'invite_token',
+    ];
+
+    /**
+     * Phase 3.1 compatibility measure: `contact_id` exists on the `guests`
+     * table but contacts are not yet part of any workflow or API contract.
+     * Hiding it keeps guest serialization and API responses identical to the
+     * pre-contacts behaviour. Remove this once contacts are intentionally
+     * exposed (a later phase).
+     *
+     * @var list<string>
+     */
+    protected $hidden = [
+        'contact_id',
     ];
 
     protected static function booted(): void
@@ -51,6 +63,11 @@ class Guest extends Model
         return $this->belongsTo(Event::class);
     }
 
+    public function contact(): BelongsTo
+    {
+        return $this->belongsTo(Contact::class);
+    }
+
     public function rsvp(): HasOne
     {
         return $this->hasOne(Rsvp::class);
@@ -66,11 +83,14 @@ class Guest extends Model
         return route('invites.show', ['token' => $this->invite_token], absolute: false);
     }
 
-    public function getQrCodeDataAttribute(): string
+    /**
+     * Absolute invitation URL for external channels (email, SMS, WhatsApp) and
+     * QR codes, resolved from the configured application URL. The relative
+     * `invite_url` is retained for same-origin browser links.
+     */
+    public function getInviteUrlAbsoluteAttribute(): string
     {
-        $png = QrCode::format('png')->size(300)->generate($this->invite_url);
-
-        return base64_encode($png);
+        return route('invites.show', ['token' => $this->invite_token], absolute: true);
     }
 
     public function scopePending(Builder $query): Builder

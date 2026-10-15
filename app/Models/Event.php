@@ -2,6 +2,8 @@
 
 namespace App\Models;
 
+use App\Support\EventCapabilities;
+use App\Support\EventTypes;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -23,6 +25,19 @@ class Event extends Model
         'settings',
     ];
 
+    /**
+     * Derived, configuration-backed attributes exposed in API responses.
+     * They are not columns: `event_type` is the classification key and
+     * `capabilities` is the resolved capability map, both sourced from the
+     * event's `settings` JSON.
+     *
+     * @var list<string>
+     */
+    protected $appends = [
+        'event_type',
+        'capabilities',
+    ];
+
     protected function casts(): array
     {
         return [
@@ -40,6 +55,41 @@ class Event extends Model
     public function guests(): HasMany
     {
         return $this->hasMany(Guest::class);
+    }
+
+    public function imports(): HasMany
+    {
+        return $this->hasMany(GuestImport::class);
+    }
+
+    public function celebration(): BelongsTo
+    {
+        return $this->belongsTo(Celebration::class);
+    }
+
+    /**
+     * Resolved event type key. Unknown/missing values fall back to the
+     * configured default so pre-taxonomy events behave predictably.
+     */
+    public function getEventTypeAttribute(): string
+    {
+        $settings = (array) ($this->settings ?? []);
+        $stored = $settings['event_type'] ?? null;
+
+        return EventTypes::resolve(is_string($stored) ? $stored : null);
+    }
+
+    /**
+     * Effective capability map (implemented capabilities only are ever true).
+     *
+     * @return array<string, bool>
+     */
+    public function getCapabilitiesAttribute(): array
+    {
+        return EventCapabilities::resolve(
+            (array) ($this->settings ?? []),
+            EventTypes::defaultCapabilities($this->event_type)
+        );
     }
 
     public function getResponseRateAttribute(): float

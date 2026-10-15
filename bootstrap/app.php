@@ -13,6 +13,12 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware) {
         $middleware->trustProxies(at: '*');
 
+        // Provider callbacks are authenticated with a shared secret inside the
+        // controller, not with a browser CSRF token (they are server-to-server).
+        $middleware->validateCsrfTokens(except: [
+            'api/v1/webhooks/*',
+        ]);
+
         $middleware->redirectTo(
             guests: '/login',
             users: '/dashboard',

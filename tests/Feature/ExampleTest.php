@@ -12,6 +12,10 @@ class ExampleTest extends TestCase
      */
     public function test_the_application_returns_a_successful_response(): void
     {
+        if (! is_file(public_path('app/index.html'))) {
+            $this->markTestSkipped('Frontend build not present (run: cd frontend && npm run build).');
+        }
+
         $response = $this->get('/');
 
         $response->assertStatus(200);

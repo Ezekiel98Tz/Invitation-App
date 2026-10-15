@@ -2,8 +2,12 @@
 
 namespace App\Providers;
 
+use App\Models\Celebration;
+use App\Models\Contact;
 use App\Models\Event;
 use App\Models\Guest;
+use App\Policies\CelebrationPolicy;
+use App\Policies\ContactPolicy;
 use App\Policies\EventPolicy;
 use App\Policies\GuestPolicy;
 use Illuminate\Support\Facades\Gate;
@@ -26,5 +30,7 @@ class AuthServiceProvider extends ServiceProvider
     {
         Gate::policy(Event::class, EventPolicy::class);
         Gate::policy(Guest::class, GuestPolicy::class);
+        Gate::policy(Celebration::class, CelebrationPolicy::class);
+        Gate::policy(Contact::class, ContactPolicy::class);
     }
 }
