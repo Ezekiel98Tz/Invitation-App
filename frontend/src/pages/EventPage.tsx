@@ -2,8 +2,10 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api, apiErrorMessage } from '../lib/api';
 import type { Delivery, EventItem, Paginated } from '../lib/types';
+import { isCapabilityEnabled } from '../lib/capabilities';
 import { Alert, LoadingBlock } from '../components/ui';
 import { GuestsPanel } from '../components/GuestsPanel';
+import { EventFormModal } from '../components/EventFormModal';
 
 type Tab = 'guests' | 'invitations' | 'deliveries';
 
@@ -24,6 +26,7 @@ export function EventPage() {
 
     const [preview, setPreview] = useState<Preview | null>(null);
     const [failed, setFailed] = useState<Delivery[]>([]);
+    const [editOpen, setEditOpen] = useState(false);
 
     const notify = (message: string) => {
         setToast(message);
@@ -100,6 +103,9 @@ export function EventPage() {
         }
     };
 
+    const contributionsEnabled = isCapabilityEnabled(event, 'contributions');
+    const checkInEnabled = isCapabilityEnabled(event, 'check_in');
+
     return (
         <div className="stack">
             <div className="row between">
@@ -114,10 +120,51 @@ export function EventPage() {
                         </p>
                     ) : null}
                 </div>
-                <Link className="btn btn-primary" to={`/events/${eventId}/invitation`}>
-                    Invitation design
-                </Link>
+                <div className="row">
+                    <Link
+                        className="btn btn-ghost"
+                        style={contributionsEnabled ? undefined : { opacity: 0.55 }}
+                        to={`/events/${eventId}/pledges`}
+                        title={
+                            contributionsEnabled
+                                ? 'Pledges'
+                                : 'Contributions is disabled for this event — open to learn how to enable it'
+                        }
+                    >
+                        Pledges{contributionsEnabled ? '' : ' · off'}
+                    </Link>
+                    <Link
+                        className="btn btn-ghost"
+                        style={checkInEnabled ? undefined : { opacity: 0.55 }}
+                        to={`/events/${eventId}/check-in`}
+                        title={
+                            checkInEnabled
+                                ? 'Check-in'
+                                : 'Check-in is disabled for this event — open to learn how to enable it'
+                        }
+                    >
+                        Check-in{checkInEnabled ? '' : ' · off'}
+                    </Link>
+                    <button type="button" className="btn btn-ghost" onClick={() => setEditOpen(true)}>
+                        Edit event
+                    </button>
+                    <Link className="btn btn-primary" to={`/events/${eventId}/invitation`}>
+                        Invitation design
+                    </Link>
+                </div>
             </div>
+
+            <EventFormModal
+                open={editOpen}
+                event={event}
+                onClose={() => setEditOpen(false)}
+                onSaved={() => {
+                    setEditOpen(false);
+                    void loadEvent();
+                    notify('Event updated.');
+                }}
+                onError={setError}
+            />
 
             {toast ? <Alert kind="success">{toast}</Alert> : null}
             {error ? <Alert kind="error">{error}</Alert> : null}
@@ -141,7 +188,13 @@ export function EventPage() {
                     </button>
                 </div>
 
-                {tab === 'guests' ? <GuestsPanel eventId={eventId} eventTitle={event?.title} /> : null}
+                {tab === 'guests' ? (
+                    <GuestsPanel
+                        eventId={eventId}
+                        eventTitle={event?.title}
+                        checkInEnabled={isCapabilityEnabled(event, 'check_in')}
+                    />
+                ) : null}
 
                 {tab === 'invitations' ? (
                     <div className="stack">

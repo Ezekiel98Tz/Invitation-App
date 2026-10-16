@@ -17,10 +17,20 @@ class SandboxMessageTransport implements MessageTransport
 {
     public function send(string $channel, array $payload): TransportResult
     {
+        $message = (string) ($payload['message'] ?? '');
+        $secret = $payload['redact_secret'] ?? null;
+
+        // Entry-credential messages must never persist the plaintext secret in
+        // captured content. The notification supplies `redact_secret` for exactly
+        // this purpose; replace it before it is stored anywhere.
+        if (is_string($secret) && $secret !== '') {
+            $message = str_replace($secret, '[redacted]', $message);
+        }
+
         $meta = [
             'sandbox' => true,
             'captured' => [
-                'message' => $payload['message'],
+                'message' => $message,
             ],
         ];
 

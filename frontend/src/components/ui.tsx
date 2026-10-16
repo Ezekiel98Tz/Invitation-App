@@ -13,22 +13,27 @@ export function LoadingBlock({ label = 'Loading…' }: { label?: string }) {
     );
 }
 
-export function Alert({ kind, children }: { kind: 'error' | 'success'; children: ReactNode }) {
+export function Alert({ kind, children }: { kind: 'error' | 'success' | 'info'; children: ReactNode }) {
     return <div className={`alert alert-${kind}`}>{children}</div>;
 }
 
 export function Field({
     label,
     error,
+    htmlFor,
     children,
 }: {
     label: string;
     error?: string;
+    /** Optional id of the control, so the label is programmatically associated. */
+    htmlFor?: string;
     children: ReactNode;
 }) {
     return (
         <div className="field">
-            <label className="label">{label}</label>
+            <label className="label" htmlFor={htmlFor}>
+                {label}
+            </label>
             {children}
             {error ? <div className="error-text">{error}</div> : null}
         </div>

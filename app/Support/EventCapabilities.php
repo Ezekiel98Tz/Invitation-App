@@ -17,6 +17,13 @@ namespace App\Support;
  * forced to false on read. This prevents a flag from being presented as a
  * working feature.
  *
+ * `check_in` and `contributions` are implemented and enforced server-side
+ * (pledge endpoints require `contributions`; check-in/attendance and the
+ * operator credential endpoints require `check_in`). They still ship
+ * `default => false`, so an event must explicitly opt in and existing events
+ * keep their current behaviour. An event type can opt a whole type in through
+ * `config/event_types.php` `default_capabilities`; no type does today.
+ *
  * Storage: capabilities live under the event's `settings.capabilities` JSON
  * object. Legacy flat settings keys that predate this structure
  * (`settings.allow_plus_ones`, a non-empty `settings.custom_questions`) are
@@ -53,7 +60,7 @@ class EventCapabilities
         'check_in' => [
             'label' => 'Check-in',
             'description' => 'Check invited guests in on arrival.',
-            'implemented' => false,
+            'implemented' => true,
             'default' => false,
         ],
         'households' => [
@@ -65,7 +72,7 @@ class EventCapabilities
         'contributions' => [
             'label' => 'Contributions',
             'description' => 'Track contribution pledges and recorded contributions.',
-            'implemented' => false,
+            'implemented' => true,
             'default' => false,
         ],
     ];
@@ -133,9 +140,10 @@ class EventCapabilities
      *
      * Precedence (lowest to highest):
      *   1. hard defaults (all false)
-     *   2. event-type defaults (extension point; empty today)
-     *   3. stored `settings.capabilities` values (implemented keys only)
-     *   4. legacy settings fallback, only for keys not present in `capabilities`
+     *   2. event-type defaults (implemented keys only)
+     *   3. legacy settings fallback, only for a legacy key actually present in
+     *      the settings and not overridden by `capabilities`
+     *   4. stored `settings.capabilities` values (implemented keys only)
      *
      * Not-yet-implemented capabilities are always forced to false.
      *
@@ -149,6 +157,7 @@ class EventCapabilities
         $stored = $settings['capabilities'] ?? null;
         $stored = is_array($stored) ? $stored : null;
 
+        // Event-type defaults form the base for implemented capabilities.
         foreach ($typeDefaults as $key => $value) {
             if (self::isImplemented((string) $key)) {
                 $capabilities[(string) $key] = (bool) $value;
@@ -157,16 +166,21 @@ class EventCapabilities
 
         foreach (self::DEFINITIONS as $key => $definition) {
             if (! $definition['implemented']) {
-                $capabilities[$key] = false;
                 continue;
             }
 
+            // An explicit stored capability always wins.
             if ($stored !== null && array_key_exists($key, $stored)) {
                 $capabilities[$key] = (bool) $stored[$key];
                 continue;
             }
 
-            $capabilities[$key] = self::legacyValue($key, $settings);
+            // A legacy key only overrides a type default when the caller
+            // actually supplied it; an absent legacy key must not silently
+            // disable a type default.
+            if (self::hasLegacyValue($key, $settings)) {
+                $capabilities[$key] = self::legacyValue($key, $settings);
+            }
         }
 
         // Force not-yet-implemented capabilities off regardless of input.
@@ -177,6 +191,20 @@ class EventCapabilities
         }
 
         return $capabilities;
+    }
+
+    /**
+     * Whether the settings contain the legacy backing key for a capability.
+     *
+     * @param  array<string, mixed>  $settings
+     */
+    private static function hasLegacyValue(string $key, array $settings): bool
+    {
+        return match ($key) {
+            'plus_ones' => array_key_exists('allow_plus_ones', $settings),
+            'custom_questions' => array_key_exists('custom_questions', $settings),
+            default => false,
+        };
     }
 
     /**

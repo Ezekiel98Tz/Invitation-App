@@ -25,7 +25,26 @@ class AppServiceProvider extends ServiceProvider
         RateLimiter::for('invite-token', function (Request $request) {
             $token = (string) $request->route('token');
 
-            return Limit::perMinute(5)->by($token);
+            // Two independent caps. The per-client-address cap prevents an
+            // attacker from getting a fresh bucket for every guessed token
+            // (the previous single per-token bucket made enumeration free);
+            // the per-token cap still bounds hammering a single known token.
+            // Returning an array enforces every limit.
+            return [
+                Limit::perMinute((int) config('invitations.rate_limits.invite_token_ip_per_minute', 30))
+                    ->by('invite-ip:'.$request->ip()),
+                Limit::perMinute((int) config('invitations.rate_limits.invite_token_per_minute', 5))
+                    ->by('invite-token:'.$token),
+            ];
+        });
+
+        RateLimiter::for('admin-read', function (Request $request) {
+            $userId = optional($request->user())->id;
+            $key = ($userId ? 'u:'.$userId : 'guest').':'.$request->ip();
+
+            $limit = (int) config('invitations.rate_limits.admin_read_per_minute', 120);
+
+            return Limit::perMinute($limit)->by($key);
         });
 
         RateLimiter::for('admin-write', function (Request $request) {

@@ -187,6 +187,24 @@ class InviteController extends Controller
         $guest->status = $rsvpStatus;
         $guest->save();
 
+        // The event-entry credential follows the RSVP decision. The RSVP link
+        // token is never touched. Credential handling must never break the RSVP
+        // journey, so failures are logged rather than surfaced to the guest.
+        try {
+            $issuer = app(\App\Services\CredentialIssuer::class);
+
+            if ($rsvpStatus === 'accepted') {
+                $issuer->activate($guest);
+            } else {
+                $issuer->revoke($guest, 'rsvp_declined');
+            }
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('Credential lifecycle update failed', [
+                'guest_id' => $guest->id,
+                'status' => $rsvpStatus,
+            ]);
+        }
+
         if (config('invitations.notify_admin_on_rsvp', true) && $event->user) {
             $event->user->notify(new RsvpReceivedNotification(
                 $event,

@@ -85,9 +85,79 @@ and pledges, contact merge/unmerge, and browser-level Delivery Lab verification.
   links.
 - QR endpoints return **SVG** (`image/svg+xml`) so they do not depend on the Imagick PHP extension:
   `GET /invite/{token}/qr` and `GET /api/v1/public/invites/{token}/qr`.
-- Public access is token-scoped and rate-limited. Validity is centralised in `App\Support\InvitationAccess`:
+- Public access is token-scoped and rate-limited by **two independent limits** — a per-client-IP cap
+  (default 30/min) and a per-token cap (default 5/min), configured under
+  `invitations.rate_limits.invite_token_ip_per_minute` / `invite_token_per_minute`. Limiting on the token
+  alone was insufficient because an attacker could obtain a fresh bucket for every guessed token. Validity
+  is centralised in `App\Support\InvitationAccess`:
   **unavailable** (event missing / soft-deleted) and **expired** (event already started, or older than
   the optional token TTL) both return a clean `410` (browser page / JSON) or `404` for QR — never a 500.
+
+### Entry credentials & event-day check-in
+
+- **Entry credentials are separate from the RSVP link token.** `guests.invite_token` remains the RSVP link
+  bearer only. `invitation_credentials` holds at most one *current* credential per guest per event (unique
+  nullable `active_key`). The secret is stored **hashed** (`code_hash`, HMAC-SHA256 with `APP_KEY`, used for
+  lookup) and **encrypted at rest** (`code_encrypted`) so an authorized operator can deliberately reveal or
+  resend it; there is no plaintext column and the secret is hidden from JSON serialization.
+- **Lifecycle** (`App\Services\CredentialIssuer`): issue/activate on RSVP **accept**, revoke on **decline**,
+  and operator **reissue** that revokes the current credential and links the replacement (`replaces_id`).
+  Codes are 8-char Crockford-style (~40 bits). Issuance is idempotent and concurrency-safe.
+- **Validity is independent of the RSVP link.** `App\Support\CredentialAccess` gives an event-day window
+  (`event_start − 6h` … `+ 12h` by default; `invitations.credential_valid_before_hours` /
+  `credential_valid_after_hours`) with explicit states (`valid`, `not_active`, `revoked`, `expired`,
+  `not_yet`, `unavailable`). The RSVP link still expires at event start; the entry credential does not.
+- **Check-in** (`Admin\CheckInController`) is an explicit operator action. `lookup`/scan is read-only and
+  never records attendance; `store` records an `attendances` row (timestamp, operator, method, party size)
+  inside a transaction with a unique index preventing duplicates; `reverse` is audited and keeps the
+  original row so a corrected check-in can follow. QR possession or invitation verification is **not**
+  attendance. Outstanding pledges (future workstream) will not affect admission.
+- **Entry-code delivery** reuses the existing delivery architecture via
+  `App\Notifications\EntryCredentialNotification` + `App\Jobs\SendEntryCredentialJob` (delivery `kind =
+  credential`; resend endpoint `POST .../guests/{guest}/credential/resend`). It only ever sends the
+  **current active** credential. Entry codes are stored hashed + encrypted, and are **redacted from
+  sandbox/captured delivery content** (`redact_secret` → `[redacted]`) so they never persist in Delivery
+  Lab capture, metadata or logs. Unconfigured channels record a sanitized failure, not success.
+
+### Pledges (information management) & Excel import
+
+- Pledges record information clients provide (often Excel) or that operators enter. **Invitation Studio does
+  not collect, hold, transfer or verify money.** Outstanding pledges never block invitations, RSVP,
+  credentials or check-in. Pledges are event-owned; Celebration totals aggregate member events.
+- Amounts are integer **minor units** with an explicit currency; fulfillment is **append-only** (partial,
+  multiple, reversible with history). APIs: `events/{event}/pledges` (+`/{pledge}`, `/cancel`,
+  `/fulfillments`, `/fulfillments/{fulfillment}/reverse`, `/summary`), `reports/pledges`,
+  `reports/celebrations/{celebration}/pledges`, and pledge import/export under
+  `events/{event}/pledges/import/*` and `events/{event}/pledges/export`.
+- **Import is preview-first and non-mutating until confirmation.** Matching prefers explicit guest/contact
+  identity, then normalized email/phone, then (fallback only) email/phone + currency + exact amount;
+  name+amount is never used; ambiguous rows require an explicit decision and are never silently merged.
+  Re-import is idempotent (no duplicate pledges; fulfillments deduped). Provides a downloadable error report
+  and XLSX template. `App\Services\PledgeLedger` owns balances (`open|partially_fulfilled|fulfilled|
+  over_fulfilled`); currency is immutable once fulfillment exists.
+- **Pledges operator UI** shipped: `/events/:id/pledges` list (search/filter/pagination) and pledge detail
+  with manual create/edit, append-only fulfillment history (record + reversal with confirmation), cancel,
+  event summary, celebration roll-up and event XLSX export; amounts are shown as *reported* and never imply
+  money collected/verified by Invitation Studio, and never gate admission. The pledge import/export
+  **wizard UI** is shipped (`/events/:id/pledges/import`): template download → upload (columns recognised
+  automatically) → non-mutating preview (validation errors, matches, duplicates, conflicts, ambiguous
+  identities) → explicit create/update/skip decisions for ambiguous rows → explicit confirm → results
+  summary (created/updated/skipped/failed/ambiguous) → row-level error report (CSV; XLSX when the PHP `zip`
+  extension is present) → event export. Manual column mapping is available only under
+  **Advanced: Import a different spreadsheet format** for third-party files.
+- **Capabilities are enforced server-side.** `check_in` and `contributions` are implementable but
+  **default-off**; enabling an event capability (`settings.capabilities`) is validated. A fail-closed
+  `EnsureEventCapability` middleware returns **HTTP 403** for pledge/import routes when `contributions` is
+  off, and for check-in/attendance and operator credential routes when `check_in` is off. Frontend hiding is
+  not treated as authorization. Event-type `default_capabilities` remain the (configurable, non-wedding-only)
+  opt-in mechanism.
+- **Capability-aware UI:** Pledges and Check-in navigation/actions are hidden/disabled from the event's
+  real `capabilities` data, and opening a disabled feature by direct URL shows a friendly "feature disabled"
+  state instead of a raw 403. `check_in` and `contributions` are handled independently. Frontend visibility
+  is not authorization — the backend still returns 403. Event-type capability defaults remain configurable
+  (non-wedding-only), and an event capability editor is available in the event form.
+- Outstanding: browser verification and live-provider integration were not performed; the Celebration
+  pledge roll-up links are not per-event capability-gated.
 - A guest RSVPs via the public page or API: accept/decline, optional plus-ones, custom questions, and
   capacity enforcement; responses are stored in `rsvps` and mirrored to `guests.status`.
 
@@ -281,6 +351,73 @@ invitation design templates/fonts live in `config/templates.php`.
 - **Known limitations:** email “delivery” is local mailer acceptance (no provider confirmation) unless a
   provider/mailer reports status; the webhook uses a shared secret only (no provider signature) because no
   provider is integrated; no exactly-once delivery guarantee (a lost provider response may cause a resend).
+- **Multi-worker duplicate-send protection requires a shared cache store.** The invitation, reminder and entry-credential
+  jobs take a per-guest atomic cache lock (`Cache::lock`) so concurrent workers cannot send the same message twice. This
+  only holds across independent processes/hosts when `CACHE_STORE` is a **shared, lock-capable** store — the project
+  defaults to `CACHE_STORE=database` (Laravel's `database` cache store uses the `cache_locks` table created by the default
+  cache migration). The `array` store (used by the test suite) and `file` store (per-host) do **not** provide cross-host
+  coordination. Locks auto-expire after 60s; keep `CACHE_STORE` consistent across all workers/queue consumers.
+
+### Pledge import (operator workflow)
+
+The wizard at `Pledges → Import pledges` (`/events/:id/pledges/import`) is **template-driven**: download the
+official XLSX template, fill it in, upload it, and Invitation Studio recognises the columns automatically —
+no manual column mapping is required.
+
+**Official template columns** — the single canonical contract, defined once in
+`App\Services\PledgeImporter::FIELDS` and used for template generation, header recognition and validation
+(so the template and the importer cannot drift apart):
+
+| Column | Required | Notes |
+| --- | --- | --- |
+| `pledger_name` | **yes** | Pledger name (free text). |
+| `email` | no | Used with phone to match an existing guest/contact. |
+| `phone` | no | Used with email to match an existing guest/contact. |
+| `amount` | **yes** | Pledged amount as an ordinary number (see below). |
+| `contributed_amount` | no | Reported amount already contributed → append-only fulfillment. |
+| `currency` | no | ISO-4217 code; falls back to the default-currency precedence below. |
+| `method` | no | cash, bank_transfer, mobile_money, cheque or other. |
+| `notes` | no | Free-text note stored on the pledge. |
+| `reference` | no | Receipt/transaction reference. |
+| `guest_id` | no | Explicit event-guest identity (takes precedence over email/phone). |
+| `contact_id` | no | Explicit account-contact identity. |
+| `received_on` | no | Contribution date (YYYY-MM-DD) for a reported contribution. |
+
+- **Header recognition is automatic and forgiving.** Headers are matched case-insensitively and
+  whitespace/punctuation-insensitively, with supported aliases (`email`, `phone`, `amount`, `Pledger Name`,
+  `Mobile`, `Currency Code`, …). After upload the UI shows the recognised columns, a read-only sample of the
+  extracted values, and any columns that will not be imported. A fresh preview is prepared automatically.
+- **Required vs. row-level errors.** A missing required **column** is a single file-level error naming the
+  column — the importer never reports "missing value" on every row because a header is absent. A recognised
+  column whose **cell** is empty or invalid is a row-level error naming that row.
+- **Amounts are ordinary values** (`500000`, `500,000`, `500000.00`, `1234.56`, `USD 100.00`). They are
+  converted to integer minor units using the resolved currency's precision; operators are never asked for
+  minor units, and meaningful fractional amounts are never silently rounded (they are rejected with a
+  row-level error). Negative values are rejected.
+- **Currency defaults:** explicit row currency → import-request default → event currency
+  (`settings.currency`) → configured application default (`INVITATIONS_PLEDGE_DEFAULT_CURRENCY`, default
+  `USD`). A missing currency column never invalidates a row.
+- **Contributions & balances:** a reported contributed amount becomes an append-only fulfillment entry; the
+  outstanding balance is always derived (`pledged − reported contributions`) and a supplied balance is only
+  a consistency check. It never affects admission or check-in.
+- **Preview is non-mutating** and required before **Confirm**; a stale preview (after changing a mapping,
+  mode or currency) cannot be confirmed, and confirmation re-validates server-side. Nothing is written until
+  you confirm.
+- **Duplicates / re-import:** matching is conservative (explicit guest/contact → normalized email/phone →
+  email/phone + currency + exact amount); a name with a matching amount never merges. Re-importing the same
+  file does not duplicate pledges or fulfillments; ambiguous rows require an explicit operator decision.
+- **Invalid rows** are listed with the offending field and must be corrected and re-imported; they are never
+  imported. A row-level error report is downloadable (CSV, or XLSX when the PHP `zip` extension is present).
+- **`pledge_date` is not supported and is reported as such.** Invitation Studio has no pledge-date field
+  (only contribution dates map to `received_on`). A `pledge_date` column in an uploaded workbook is listed
+  under **Not imported** with a clear reason and is never silently dropped or reinterpreted as a
+  contribution date. Adding a first-class pledge date would be a separate, approved schema decision.
+- **Advanced mapping** (`Advanced: Import a different spreadsheet format`) is available for third-party
+  files whose headers do not match the template; it is collapsed by default and never obstructs the
+  template-driven path.
+- **Legacy compatibility:** previously supported minor-unit columns (`pledged_amount_minor`,
+  `fulfillment_amount_minor`) and older aliases remain accepted and are labelled *(legacy)* in the UI, but
+  they are **not** part of the official template.
 
 ## Data model and engineering decisions
 

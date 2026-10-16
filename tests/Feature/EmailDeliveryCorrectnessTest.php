@@ -341,9 +341,10 @@ class EmailDeliveryCorrectnessTest extends TestCase
         $this->assertNotNull($guest->fresh()->sent_at);
     }
 
-    public function test_sms_is_still_queued_as_a_notification_job(): void
+    public function test_sms_invitation_is_sent_inline_and_not_queued(): void
     {
         Bus::fake();
+        Http::fake(['sms.example.test/*' => Http::response(['message_id' => 'sms-ref'], 200)]);
         config([
             'mail.default' => 'array',
             'invitations.channels' => ['sms'],
@@ -354,8 +355,11 @@ class EmailDeliveryCorrectnessTest extends TestCase
 
         (new SendInvitationJob($guest))->handle();
 
-        // SMS keeps its existing (queued channel) behaviour.
-        Bus::assertDispatched(SendQueuedNotifications::class);
+        // SMS is sent inline within the job so delivery rows reach a terminal
+        // state and `sent_at` is set; it is no longer re-queued as a nested job.
+        Bus::assertNotDispatched(SendQueuedNotifications::class);
+        Http::assertSentCount(1);
+        $this->assertNotNull($guest->fresh()->sent_at);
     }
 
     public function test_email_transport_failure_propagates_so_the_queue_can_retry(): void

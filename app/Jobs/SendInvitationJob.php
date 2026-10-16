@@ -11,6 +11,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\Cache;
 use Throwable;
 
 class SendInvitationJob implements ShouldQueue
@@ -36,6 +37,29 @@ class SendInvitationJob implements ShouldQueue
             return;
         }
 
+        // Serialise concurrent duplicate dispatches (for example a manual resend
+        // racing the scheduler) so two jobs cannot both send before either marks
+        // the guest as sent. Released when this attempt finishes; retries and
+        // deliberate resends (which reset sent_at) re-acquire it.
+        $lock = Cache::lock('invitation:guest:'.$guest->id, 60);
+
+        if (! $lock->get()) {
+            return;
+        }
+
+        try {
+            $this->deliver($guest);
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
+     * Compose and send the invitation, recording delivery outcomes. Only marks
+     * the guest as sent when a channel actually reached an accepted state.
+     */
+    private function deliver(Guest $guest): void
+    {
         $notification = new InvitationNotification($guest->event, $guest->invite_url_absolute);
         $channels = $notification->via($guest);
 
@@ -83,8 +107,7 @@ class SendInvitationJob implements ShouldQueue
 
         // Email is sent synchronously within this job (never re-queued) so a
         // mail transport failure is recorded against the email attempt and can
-        // be retried by the queue. SMS/WhatsApp keep their existing channel
-        // behaviour and record their own outcomes.
+        // be retried by the queue.
         if (isset($rows['mail'])) {
             MailDelivery::send($guest, $notification, $rows['mail']);
         }
@@ -95,7 +118,13 @@ class SendInvitationJob implements ShouldQueue
             $notification->onlyChannels($otherChannels);
 
             try {
-                $guest->notify($notification);
+                // Sent inline (not re-queued) so SMS/WhatsApp delivery rows reach
+                // a terminal state within this job. Otherwise the rows would stay
+                // `queued` while a nested notification job is still pending, and
+                // `sent_at` would never be set — causing the unsent scheduler to
+                // re-dispatch and duplicate the invitation. This also keeps the
+                // invitation URL/token out of serialized queued payloads.
+                $guest->notifyNow($notification);
             } catch (Throwable $e) {
                 // Sanitized: never store raw provider text or message contents.
                 InvitationDelivery::where('guest_id', $guest->id)
@@ -111,7 +140,29 @@ class SendInvitationJob implements ShouldQueue
             }
         }
 
+        // Never mark the guest as invited unless at least one channel actually
+        // reached an accepted state (queued is not enough). An unavailable or
+        // unconfigured transport must not look like a successful invitation.
+        if (! $this->anyChannelAccepted($rows)) {
+            return;
+        }
+
         $guest->forceFill(['sent_at' => now()])->save();
+    }
+
+    /**
+     * @param  array<string, InvitationDelivery>  $rows
+     */
+    private function anyChannelAccepted(array $rows): bool
+    {
+        if ($rows === []) {
+            return true;
+        }
+
+        return InvitationDelivery::query()
+            ->whereIn('id', array_map(static fn (InvitationDelivery $row) => $row->id, $rows))
+            ->whereIn('status', ['sent', 'delivered'])
+            ->exists();
     }
 
     public function failed(Throwable $exception): void

@@ -7,6 +7,7 @@ use App\Models\Guest;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Storage;
+use Spatie\SimpleExcel\SimpleExcelReader;
 use Tests\TestCase;
 
 class GuestExportTest extends TestCase
@@ -50,6 +51,29 @@ class GuestExportTest extends TestCase
             ->assertDownload();
 
         $this->assertDirectoryExists(Storage::path('exports'));
+    }
+
+    public function test_guest_export_does_not_include_the_invitation_token(): void
+    {
+        $user = User::factory()->create();
+        $event = Event::factory()->create(['user_id' => $user->id]);
+        $guest = Guest::factory()->create(['event_id' => $event->id]);
+        $token = (string) $guest->invite_token;
+
+        $response = $this->actingAs($user)
+            ->get(route('api.events.guests.export', ['event' => $event->id]))
+            ->assertOk()
+            ->assertDownload();
+
+        $file = $response->baseResponse->getFile()->getPathname();
+        $rows = SimpleExcelReader::create($file)->getRows()->all();
+
+        $this->assertNotEmpty($rows);
+
+        // The bearer RSVP token must not be exported; operators obtain the
+        // invitation link/QR through the authenticated in-app workflow.
+        $this->assertNotContains('invite_token', array_keys($rows[0]));
+        $this->assertStringNotContainsString($token, (string) json_encode($rows));
     }
 
     public function test_guest_export_requires_authentication(): void

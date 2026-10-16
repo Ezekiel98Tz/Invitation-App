@@ -11,6 +11,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\Cache;
 use Throwable;
 
 class SendReminderJob implements ShouldQueue
@@ -39,6 +40,30 @@ class SendReminderJob implements ShouldQueue
             return;
         }
 
+        // Serialise concurrent duplicate scheduler invocations for the same
+        // guest so two jobs cannot both send a reminder before either records
+        // `reminded_at` (which is what makes a duplicate reminder possible under
+        // an asynchronous queue). The lock is released when this attempt
+        // finishes, so a genuine retry can re-acquire it.
+        $lock = Cache::lock('reminder:guest:'.$guest->id, 60);
+
+        if (! $lock->get()) {
+            return;
+        }
+
+        try {
+            $this->deliver($guest);
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
+     * Compose and send the reminder, recording delivery outcomes. Never marks a
+     * reminder as delivered — only that a transport accepted a channel.
+     */
+    private function deliver(Guest $guest): void
+    {
         $notification = new ReminderNotification($guest->event, $guest->invite_url_absolute);
         $channels = $notification->via($guest);
 
@@ -85,8 +110,7 @@ class SendReminderJob implements ShouldQueue
 
         // Email is sent synchronously within this job (never re-queued) so a
         // mail transport failure is recorded against the email attempt and can
-        // be retried by the queue. SMS/WhatsApp keep their existing channel
-        // behaviour and record their own outcomes.
+        // be retried by the queue.
         if (isset($rows['mail'])) {
             MailDelivery::send($guest, $notification, $rows['mail']);
         }
@@ -97,7 +121,11 @@ class SendReminderJob implements ShouldQueue
             $notification->onlyChannels($otherChannels);
 
             try {
-                $guest->notify($notification);
+                // Sent inline so delivery rows reach a terminal state within
+                // this job; this lets `reminded_at` be set correctly under an
+                // asynchronous queue instead of leaving the marker null while a
+                // nested notification job is still pending.
+                $guest->notifyNow($notification);
             } catch (Throwable $e) {
                 // Sanitized: never store raw provider text or message contents.
                 InvitationDelivery::where('guest_id', $guest->id)
@@ -113,7 +141,28 @@ class SendReminderJob implements ShouldQueue
             }
         }
 
+        // Never mark the guest as reminded unless at least one channel actually
+        // reached an accepted state (queued is not enough).
+        if (! $this->anyChannelAccepted($rows)) {
+            return;
+        }
+
         $guest->forceFill(['reminded_at' => now()])->save();
+    }
+
+    /**
+     * @param  array<string, InvitationDelivery>  $rows
+     */
+    private function anyChannelAccepted(array $rows): bool
+    {
+        if ($rows === []) {
+            return true;
+        }
+
+        return InvitationDelivery::query()
+            ->whereIn('id', array_map(static fn (InvitationDelivery $row) => $row->id, $rows))
+            ->whereIn('status', ['sent', 'delivered'])
+            ->exists();
     }
 
     public function failed(Throwable $exception): void

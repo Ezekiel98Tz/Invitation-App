@@ -15,6 +15,7 @@ interface EventForm {
     event_type: string;
     allow_plus_ones: boolean;
     enable_waitlist: boolean;
+    capabilities: Record<string, boolean>;
 }
 
 const emptyForm: EventForm = {
@@ -28,7 +29,14 @@ const emptyForm: EventForm = {
     event_type: '',
     allow_plus_ones: false,
     enable_waitlist: false,
+    capabilities: {},
 };
+
+/**
+ * Capabilities that already have a dedicated control in this form or whose
+ * backing data is edited elsewhere, so they are not duplicated here.
+ */
+const CAPABILITY_WITH_DEDICATED_CONTROL = new Set(['plus_ones', 'custom_questions']);
 
 function toDatetimeLocal(value: string | null | undefined): string {
     if (!value) return '';
@@ -50,6 +58,7 @@ function fromEvent(event: EventItem): EventForm {
         event_type: event.event_type ?? '',
         allow_plus_ones: Boolean(event.settings?.allow_plus_ones),
         enable_waitlist: Boolean(event.settings?.enable_waitlist),
+        capabilities: { ...(event.capabilities ?? event.settings?.capabilities ?? {}) },
     };
 }
 
@@ -113,6 +122,25 @@ export function EventFormModal({
         setSaving(true);
         setErrors({});
 
+        const settings: Record<string, unknown> = {
+            allow_plus_ones: form.allow_plus_ones,
+            custom_questions: [],
+            enable_waitlist: form.enable_waitlist,
+            event_type: form.event_type || null,
+        };
+
+        // Only send an explicit capability map when the taxonomy (the single
+        // source of truth for which capabilities exist and are implemented) has
+        // loaded. Sending it preserves the backend's deep-merge behaviour and
+        // lets an operator opt a capability in or out per event.
+        if (eventTypes) {
+            const capabilities: Record<string, boolean> = { plus_ones: form.allow_plus_ones };
+            for (const [key] of editorCapabilities) {
+                capabilities[key] = form.capabilities[key] ?? false;
+            }
+            settings.capabilities = capabilities;
+        }
+
         const payload: Record<string, unknown> = {
             title: form.title,
             description: form.description || null,
@@ -120,12 +148,7 @@ export function EventFormModal({
             timezone: form.timezone,
             venue: form.venue,
             capacity: form.capacity ? Number(form.capacity) : null,
-            settings: {
-                allow_plus_ones: form.allow_plus_ones,
-                custom_questions: [],
-                enable_waitlist: form.enable_waitlist,
-                event_type: form.event_type || null,
-            },
+            settings,
         };
 
         // Only associate on creation; editing never changes membership.
@@ -151,6 +174,13 @@ export function EventFormModal({
     };
 
     const isCreate = form.id === null;
+
+    const editorCapabilities = eventTypes
+        ? Object.entries(eventTypes.capabilities).filter(
+              ([key, definition]) =>
+                  definition.implemented && !CAPABILITY_WITH_DEDICATED_CONTROL.has(key),
+          )
+        : [];
 
     return (
         <Modal open={open} title={isCreate ? 'Create event' : 'Edit event'} onClose={onClose} busy={saving}>
@@ -228,6 +258,36 @@ export function EventFormModal({
                     />
                     <span>Allow plus-ones</span>
                 </label>
+
+                {editorCapabilities.length > 0 ? (
+                    <fieldset className="capability-fieldset">
+                        <legend className="label">Event capabilities</legend>
+                        <p className="form-help" style={{ marginTop: 0 }}>
+                            Optional modules, off by default. They are a per-event choice — selecting an event type
+                            does not turn them on.
+                        </p>
+                        {editorCapabilities.map(([key, definition]) => (
+                            <label key={key} className="capability-option">
+                                <input
+                                    type="checkbox"
+                                    checked={form.capabilities[key] ?? false}
+                                    onChange={(e) =>
+                                        setForm({
+                                            ...form,
+                                            capabilities: { ...form.capabilities, [key]: e.target.checked },
+                                        })
+                                    }
+                                />
+                                <span>
+                                    <span className="cell-strong">{definition.label}</span>
+                                    {definition.description ? (
+                                        <span className="muted small"> — {definition.description}</span>
+                                    ) : null}
+                                </span>
+                            </label>
+                        ))}
+                    </fieldset>
+                ) : null}
 
                 {isCreate && celebrationId && celebrationName ? (
                     <p className="form-help">

@@ -7,6 +7,10 @@ import { RegisterPage } from './pages/RegisterPage';
 import { LandingPage } from './pages/LandingPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { EventPage } from './pages/EventPage';
+import { PledgesPage } from './pages/PledgesPage';
+import { PledgesImportPage } from './pages/PledgesImportPage';
+import { PledgeDetailPage } from './pages/PledgeDetailPage';
+import { CheckInPage } from './pages/CheckInPage';
 import { ContactsPage } from './pages/ContactsPage';
 import { ContactDetailPage } from './pages/ContactDetailPage';
 import { DeliveryLabPage } from './pages/DeliveryLabPage';
@@ -41,6 +45,10 @@ export function App() {
                         <Route path="/celebrations" element={<CelebrationsPage />} />
                         <Route path="/celebrations/:id" element={<CelebrationDetailPage />} />
                         <Route path="/events/:id" element={<EventPage />} />
+                        <Route path="/events/:id/pledges" element={<PledgesPage />} />
+                        <Route path="/events/:id/pledges/import" element={<PledgesImportPage />} />
+                        <Route path="/events/:id/pledges/:pledgeId" element={<PledgeDetailPage />} />
+                        <Route path="/events/:id/check-in" element={<CheckInPage />} />
                         <Route path="/events/:id/invitation" element={<InvitationDesignerPage />} />
                     </Route>
 

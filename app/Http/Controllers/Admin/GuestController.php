@@ -336,7 +336,6 @@ class GuestController extends Controller
                         'email' => $guest->email,
                         'phone' => $guest->phone,
                         'status' => $guest->status,
-                        'invite_token' => $guest->invite_token,
                         'sent_at' => optional($guest->sent_at)->toDateTimeString(),
                         'reminded_at' => optional($guest->reminded_at)->toDateTimeString(),
                         'attending_count' => $guest->rsvp?->attending_count,

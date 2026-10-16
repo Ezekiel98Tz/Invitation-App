@@ -102,10 +102,68 @@ class EventTypeAndCapabilitiesTest extends TestCase
 
         $this->actingAs($user)
             ->postJson(route('api.events.store'), $this->payload([
-                'capabilities' => ['contributions' => true],
+                'capabilities' => ['households' => true],
             ]))
             ->assertStatus(422)
             ->assertJsonValidationErrors('settings.capabilities');
+    }
+
+    public function test_check_in_and_contributions_are_accepted_but_default_off(): void
+    {
+        $user = User::factory()->create();
+
+        // Default-off when the capability is not mentioned.
+        $this->actingAs($user)
+            ->postJson(route('api.events.store'), $this->payload([]))
+            ->assertStatus(201)
+            ->assertJsonPath('capabilities.check_in', false)
+            ->assertJsonPath('capabilities.contributions', false);
+
+        // Explicit opt-in is accepted and persisted for both capabilities.
+        $this->actingAs($user)
+            ->postJson(route('api.events.store'), $this->payload([
+                'capabilities' => ['check_in' => true, 'contributions' => true],
+            ]))
+            ->assertStatus(201)
+            ->assertJsonPath('capabilities.check_in', true)
+            ->assertJsonPath('capabilities.contributions', true);
+
+        $event = Event::query()->latest('id')->first();
+        $this->assertTrue($event->settings['capabilities']['check_in']);
+        $this->assertTrue($event->settings['capabilities']['contributions']);
+    }
+
+    public function test_event_types_endpoint_marks_check_in_and_contributions_implemented(): void
+    {
+        $this->getJson(route('api.event-types'))
+            ->assertOk()
+            ->assertJsonPath('capabilities.check_in.implemented', true)
+            ->assertJsonPath('capabilities.check_in.default', false)
+            ->assertJsonPath('capabilities.contributions.implemented', true)
+            ->assertJsonPath('capabilities.contributions.default', false)
+            ->assertJsonPath('capabilities.households.implemented', false);
+    }
+
+    public function test_unknown_or_not_yet_implemented_capabilities_stay_forced_off(): void
+    {
+        // A stored value for an unimplemented capability (for example written
+        // directly or left over from an older build) never resolves as enabled,
+        // even when a raw factory insert bypasses validation.
+        $event = Event::factory()->create([
+            'settings' => [
+                'capabilities' => [
+                    'households' => true,
+                    'waitlist' => true,
+                ],
+            ],
+        ]);
+
+        $capabilities = $event->capabilities;
+
+        $this->assertFalse($capabilities['households']);
+        $this->assertFalse($capabilities['waitlist']);
+        $this->assertFalse($capabilities['check_in']);
+        $this->assertFalse($capabilities['contributions']);
     }
 
     public function test_legacy_settings_resolve_capabilities_without_migration(): void

@@ -40,6 +40,7 @@ class WhatsAppChannel
             'to' => $to,
             'message' => $message,
             'sender' => config('invitations.whatsapp.sender'),
+            'redact_secret' => is_string($payload['redact_secret'] ?? null) ? $payload['redact_secret'] : null,
         ]);
 
         if ($result->accepted) {
@@ -49,7 +50,11 @@ class WhatsAppChannel
         }
 
         if ($result->reason === 'not_configured') {
-            // No endpoint configured for a live provider: behave as before (no-op).
+            // The channel applies to this guest but has no provider endpoint.
+            // Record it so the attempt is inspectable and is never mistaken for
+            // a successful send (do not throw: a retry cannot fix configuration).
+            $delivery?->recordFailure('not_configured', 'The WhatsApp channel is not configured.');
+
             return;
         }
 

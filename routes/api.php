@@ -2,11 +2,15 @@
 
 use App\Http\Controllers\Admin\AuditLogController;
 use App\Http\Controllers\Admin\CelebrationController;
+use App\Http\Controllers\Admin\CheckInController;
 use App\Http\Controllers\Admin\ContactController;
+use App\Http\Controllers\Admin\CredentialController;
 use App\Http\Controllers\Admin\DeliveryLabController;
 use App\Http\Controllers\Admin\EventController;
 use App\Http\Controllers\Admin\GuestController;
 use App\Http\Controllers\Admin\InvitationController;
+use App\Http\Controllers\Admin\PledgeController;
+use App\Http\Controllers\Admin\PledgeImportController;
 use App\Http\Controllers\Admin\ReportController;
 use App\Http\Controllers\Admin\StaffController;
 use App\Http\Controllers\Api\AuthController;
@@ -14,6 +18,7 @@ use App\Http\Controllers\Api\EventTypeController;
 use App\Http\Controllers\Api\InvitationDesignController;
 use App\Http\Controllers\InviteController;
 use App\Http\Controllers\Webhooks\DeliveryWebhookController;
+use App\Http\Middleware\EnsureEventCapability;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -64,7 +69,40 @@ Route::prefix('api/v1')->group(function () {
 
         Route::get('events/{event}/imports/latest', [GuestController::class, 'importStatus'])->name('api.events.imports.latest');
 
-        Route::get('events/{event}/guests/{guest}/verification', [GuestController::class, 'verification'])->name('api.events.guests.verification');
+        Route::middleware('throttle:admin-read')->group(function () {
+            Route::get('events/{event}/guests/{guest}/verification', [GuestController::class, 'verification'])->name('api.events.guests.verification');
+        });
+
+        // Entry credentials (separate from the RSVP link token). Credentials
+        // exist for event entry, so the operator endpoints require the
+        // `check_in` capability; the public RSVP flow that issues them is not
+        // gated here.
+        Route::middleware(EnsureEventCapability::class.':check_in')->group(function () {
+            Route::get('events/{event}/guests/{guest}/credential', [CredentialController::class, 'show'])->name('api.events.guests.credential.show');
+            Route::middleware('throttle:admin-write')->group(function () {
+                Route::post('events/{event}/guests/{guest}/credential', [CredentialController::class, 'issue'])->name('api.events.guests.credential.issue');
+                Route::post('events/{event}/guests/{guest}/credential/reissue', [CredentialController::class, 'reissue'])->name('api.events.guests.credential.reissue');
+                Route::post('events/{event}/guests/{guest}/credential/revoke', [CredentialController::class, 'revoke'])->name('api.events.guests.credential.revoke');
+                Route::post('events/{event}/guests/{guest}/credential/reveal', [CredentialController::class, 'reveal'])->name('api.events.guests.credential.reveal');
+            });
+            Route::middleware('throttle:admin-send')->group(function () {
+                Route::post('events/{event}/guests/{guest}/credential/resend', [CredentialController::class, 'resend'])->name('api.events.guests.credential.resend');
+            });
+        });
+
+        // Event-day check-in / attendance. Lookup is read-only; only an explicit
+        // check-in records attendance. All of these require the `check_in`
+        // capability for the event.
+        Route::middleware(EnsureEventCapability::class.':check_in')->group(function () {
+            Route::middleware('throttle:admin-read')->group(function () {
+                Route::get('events/{event}/check-in/lookup', [CheckInController::class, 'lookup'])->name('api.events.check-in.lookup');
+                Route::get('events/{event}/attendances', [CheckInController::class, 'index'])->name('api.events.attendances.index');
+            });
+            Route::middleware('throttle:admin-write')->group(function () {
+                Route::post('events/{event}/guests/{guest}/check-in', [CheckInController::class, 'store'])->name('api.events.guests.check-in');
+                Route::post('events/{event}/attendances/{attendance}/reverse', [CheckInController::class, 'reverse'])->name('api.events.attendances.reverse');
+            });
+        });
 
         Route::middleware('throttle:admin-heavy')->group(function () {
             Route::post('events/{event}/guests/import', [GuestController::class, 'import'])->name('api.events.guests.import');
@@ -115,6 +153,52 @@ Route::prefix('api/v1')->group(function () {
             Route::put('contacts/{contact}', [ContactController::class, 'update'])->name('api.contacts.update');
             Route::patch('contacts/{contact}', [ContactController::class, 'update']);
             Route::delete('contacts/{contact}', [ContactController::class, 'destroy'])->name('api.contacts.destroy');
+        });
+
+        // Pledges (information management only — no money is moved or held).
+        // The summary route is registered before the {pledge} detail route so
+        // "summary" can never be captured as a pledge id.
+        Route::middleware(['throttle:admin-read', EnsureEventCapability::class.':contributions'])->group(function () {
+            Route::get('events/{event}/pledges/summary', [PledgeController::class, 'summary'])->name('api.events.pledges.summary');
+        });
+
+        // Pledge spreadsheet import/export (information management only).
+        // Registered before the {pledge} detail route so literal segments such
+        // as "export", "import" and "template" are never captured as a pledge id.
+        Route::middleware(['throttle:admin-heavy', EnsureEventCapability::class.':contributions'])->group(function () {
+            Route::get('events/{event}/pledges/export', [PledgeImportController::class, 'export'])->name('api.events.pledges.export');
+            Route::get('events/{event}/pledges/import/template', [PledgeImportController::class, 'template'])->name('api.events.pledges.import.template');
+            Route::get('events/{event}/pledges/import/{batch}/errors', [PledgeImportController::class, 'errors'])->name('api.events.pledges.import.errors');
+        });
+
+        Route::middleware(['throttle:admin-write', EnsureEventCapability::class.':contributions'])->group(function () {
+            Route::post('events/{event}/pledges/import/upload', [PledgeImportController::class, 'upload'])->name('api.events.pledges.import.upload');
+            Route::post('events/{event}/pledges/import/{batch}/preview', [PledgeImportController::class, 'preview'])->name('api.events.pledges.import.preview');
+            Route::post('events/{event}/pledges/import/{batch}/confirm', [PledgeImportController::class, 'confirm'])->name('api.events.pledges.import.confirm');
+        });
+
+        Route::middleware(['throttle:admin-read', EnsureEventCapability::class.':contributions'])->group(function () {
+            Route::get('events/{event}/pledges/import/{batch}', [PledgeImportController::class, 'show'])->name('api.events.pledges.import.show');
+        });
+
+        Route::get('events/{event}/pledges', [PledgeController::class, 'index'])->name('api.events.pledges.index')->middleware(EnsureEventCapability::class.':contributions');
+        Route::get('events/{event}/pledges/{pledge}', [PledgeController::class, 'show'])->name('api.events.pledges.show')->middleware(EnsureEventCapability::class.':contributions');
+
+        Route::middleware(['throttle:admin-write', EnsureEventCapability::class.':contributions'])->group(function () {
+            Route::post('events/{event}/pledges', [PledgeController::class, 'store'])->name('api.events.pledges.store');
+            Route::patch('events/{event}/pledges/{pledge}', [PledgeController::class, 'update'])->name('api.events.pledges.update');
+            Route::post('events/{event}/pledges/{pledge}/cancel', [PledgeController::class, 'cancel'])->name('api.events.pledges.cancel');
+            Route::post('events/{event}/pledges/{pledge}/fulfillments', [PledgeController::class, 'storeFulfillment'])->name('api.events.pledges.fulfillments.store');
+            Route::post('events/{event}/pledges/{pledge}/fulfillments/{fulfillment}/reverse', [PledgeController::class, 'reverseFulfillment'])->name('api.events.pledges.fulfillments.reverse');
+        });
+
+        Route::middleware('throttle:admin-read')->group(function () {
+            // Account/celebration pledge reports aggregate across many events,
+            // so there is no single event capability to check. They stay
+            // scoped by ownership only; per-event capability gating applies to
+            // the event-scoped pledge endpoints above.
+            Route::get('reports/pledges', [PledgeController::class, 'accountReport'])->name('api.reports.pledges');
+            Route::get('reports/celebrations/{celebration}/pledges', [PledgeController::class, 'celebrationReport'])->name('api.reports.celebrations.pledges');
         });
 
         Route::get('audit-logs', [AuditLogController::class, 'index'])->name('api.audit-logs.index');

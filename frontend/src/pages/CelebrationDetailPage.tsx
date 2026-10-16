@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api, apiErrorMessage } from '../lib/api';
-import type { CelebrationDetail, EventItem, Paginated } from '../lib/types';
+import type { CelebrationDetail, CelebrationPledgeReport, EventItem, Paginated } from '../lib/types';
 import { Alert, LoadingBlock } from '../components/ui';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { EventFormModal } from '../components/EventFormModal';
+import { PledgeSummary } from '../components/PledgeSummary';
+import { formatMoney } from '../lib/money';
 
 function formatWhen(iso: string | null | undefined): string {
     if (!iso) return 'Date not set';
@@ -32,6 +34,10 @@ export function CelebrationDetailPage() {
 
     const [removeTarget, setRemoveTarget] = useState<EventItem | null>(null);
     const [removing, setRemoving] = useState(false);
+
+    const [pledgeReport, setPledgeReport] = useState<CelebrationPledgeReport | null>(null);
+    const [pledgeLoading, setPledgeLoading] = useState(true);
+    const [pledgeError, setPledgeError] = useState<string | null>(null);
 
     const flash = (message: string) => {
         setToast(message);
@@ -68,13 +74,33 @@ export function CelebrationDetailPage() {
         }
     }, []);
 
+    const loadPledgeReport = useCallback(async () => {
+        setPledgeLoading(true);
+        setPledgeError(null);
+        try {
+            const { data } = await api.get<CelebrationPledgeReport>(
+                `/api/v1/reports/celebrations/${celebrationId}/pledges`,
+            );
+            setPledgeReport(data);
+        } catch (err) {
+            setPledgeError(apiErrorMessage(err));
+        } finally {
+            setPledgeLoading(false);
+        }
+    }, [celebrationId]);
+
     useEffect(() => {
         void loadDetail();
         void loadCandidates(1, '');
-    }, [loadDetail, loadCandidates]);
+        void loadPledgeReport();
+    }, [loadDetail, loadCandidates, loadPledgeReport]);
 
     const refresh = async () => {
-        await Promise.all([loadDetail(), loadCandidates(candidatesMeta?.current_page ?? 1, appliedSearch)]);
+        await Promise.all([
+            loadDetail(),
+            loadCandidates(candidatesMeta?.current_page ?? 1, appliedSearch),
+            loadPledgeReport(),
+        ]);
     };
 
     const applySearch = () => {
@@ -295,6 +321,78 @@ export function CelebrationDetailPage() {
                     </div>
                 ) : null}
             </div>
+
+            {pledgeLoading ? (
+                <div className="card">
+                    <LoadingBlock label="Loading pledge roll-up…" />
+                </div>
+            ) : pledgeError ? (
+                <div className="card">
+                    <h3 style={{ marginTop: 0 }}>Pledge roll-up</h3>
+                    <p className="muted small" style={{ marginTop: 0 }}>
+                        Across the {detail.events.length === 1 ? 'event' : 'events'} in this celebration. Reported
+                        amounts only.
+                    </p>
+                    <Alert kind="error">{pledgeError}</Alert>
+                </div>
+            ) : pledgeReport ? (
+                <PledgeSummary
+                    heading="Pledge roll-up"
+                    totalPledges={pledgeReport.total_pledges}
+                    counts={pledgeReport.counts}
+                    currencies={pledgeReport.currencies}
+                    methods={pledgeReport.by_method}
+                    footer={
+                        pledgeReport.events.length > 0 ? (
+                            <details style={{ marginTop: '0.85rem' }}>
+                                <summary className="muted small" style={{ cursor: 'pointer' }}>
+                                    By event ({pledgeReport.event_count})
+                                </summary>
+                                <div className="table-wrap" style={{ marginTop: '0.5rem' }}>
+                                    <table>
+                                        <thead>
+                                            <tr>
+                                                <th scope="col">Event</th>
+                                                <th scope="col" className="num">
+                                                    Pledges
+                                                </th>
+                                                <th scope="col" className="num">
+                                                    Reported outstanding
+                                                </th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {pledgeReport.events.map((row) => (
+                                                <tr key={row.event_id}>
+                                                    <td className="cell-strong">
+                                                        <Link to={`/events/${row.event_id}/pledges`}>
+                                                            {row.title ?? `Event #${row.event_id}`}
+                                                        </Link>
+                                                    </td>
+                                                    <td className="muted num">{row.total_pledges}</td>
+                                                    <td className="num">
+                                                        {row.currencies.length === 0
+                                                            ? '—'
+                                                            : row.currencies
+                                                                  .map(
+                                                                      (total) =>
+                                                                          formatMoney(
+                                                                              total.outstanding_minor,
+                                                                              total.currency,
+                                                                          ),
+                                                                  )
+                                                                  .join(' · ')}
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </details>
+                        ) : null
+                    }
+                />
+            ) : null}
 
             <EventFormModal
                 open={createOpen}

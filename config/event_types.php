@@ -21,8 +21,11 @@ return [
     | `default_capabilities` is the documented extension point for type-driven
     | capability defaults. It is intentionally empty for every type today so
     | that selecting a type never changes the effective behaviour of an event
-    | (which would violate backward compatibility). Future phases may populate
-    | it with implemented capabilities once the product decision is explicit.
+    | (which would violate backward compatibility). It is NOT wedding-only:
+    | with `check_in` and `contributions` now implemented, any type may opt in
+    | by listing them here. A type default is overridden by the event's own
+    | stored `settings.capabilities` value, and no type opts in today, so all
+    | capabilities remain default-off.
     |
     */
 

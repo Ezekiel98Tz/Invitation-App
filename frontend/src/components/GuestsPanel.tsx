@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, apiErrorMessage, validationErrors } from '../lib/api';
-import type { Guest, GuestImport, GuestPage } from '../lib/types';
+import type {
+    CredentialWithCode,
+    CredentialQueuedResponse,
+    Guest,
+    GuestImport,
+    GuestPage,
+    InvitationCredential,
+} from '../lib/types';
 import { Alert, LoadingBlock, StatusBadge } from './ui';
 import { ActionMenu } from './ActionMenu';
 import { Modal } from './Modal';
@@ -12,6 +19,8 @@ const IMPORT_MAX_MB = 5;
 interface Props {
     eventId: string;
     eventTitle?: string;
+    /** Whether the event's `check_in` capability is enabled. */
+    checkInEnabled: boolean;
 }
 
 interface GuestForm {
@@ -48,7 +57,7 @@ function formatWhen(iso: string | null | undefined): string {
     return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString();
 }
 
-export function GuestsPanel({ eventId, eventTitle }: Props) {
+export function GuestsPanel({ eventId, eventTitle, checkInEnabled }: Props) {
     const [guests, setGuests] = useState<Guest[]>([]);
     const [pagination, setPagination] = useState<GuestPage | null>(null);
     const [loading, setLoading] = useState(true);
@@ -71,6 +80,7 @@ export function GuestsPanel({ eventId, eventTitle }: Props) {
 
     const [detailsGuest, setDetailsGuest] = useState<Guest | null>(null);
     const [linkGuest, setLinkGuest] = useState<Guest | null>(null);
+    const [credentialGuest, setCredentialGuest] = useState<Guest | null>(null);
     const [deleteTarget, setDeleteTarget] = useState<Guest | null>(null);
     const [deleting, setDeleting] = useState(false);
     const [remindersOpen, setRemindersOpen] = useState(false);
@@ -535,6 +545,14 @@ export function GuestsPanel({ eventId, eventTitle }: Props) {
                                                     { label: 'View details', onSelect: () => setDetailsGuest(g) },
                                                     { label: 'Edit guest', onSelect: () => openEdit(g) },
                                                     { label: 'Invitation link', onSelect: () => setLinkGuest(g) },
+                                                    ...(checkInEnabled
+                                                        ? [
+                                                              {
+                                                                  label: 'Entry credential',
+                                                                  onSelect: () => setCredentialGuest(g),
+                                                              },
+                                                          ]
+                                                        : []),
                                                     { label: 'Resend invitation', onSelect: () => resend(g) },
                                                     ...(canRemind
                                                         ? [{ label: 'Send reminder', onSelect: () => remind(g) }]
@@ -696,6 +714,14 @@ export function GuestsPanel({ eventId, eventTitle }: Props) {
 
             {/* Invitation link + QR */}
             <InviteLinkModal guest={linkGuest} onClose={() => setLinkGuest(null)} onNotify={notify} />
+
+            {/* Entry credential controls */}
+            <CredentialModal
+                eventId={eventId}
+                guest={credentialGuest}
+                onClose={() => setCredentialGuest(null)}
+                onNotify={notify}
+            />
 
             {/* Delete confirmation */}
             <ConfirmDialog
@@ -962,5 +988,380 @@ function InviteLinkModal({
                 </div>
             ) : null}
         </Modal>
+    );
+}
+
+/* ---- Entry credential controls ---- */
+
+type CredentialAction = 'reveal' | 'resend' | 'reissue' | 'revoke';
+type CredentialBusy = CredentialAction | 'issue';
+
+const CREDENTIAL_REASON_LABELS: Record<string, string> = {
+    valid: 'Valid for entry',
+    not_active: 'No active credential',
+    revoked: 'Revoked',
+    expired: 'Expired',
+    unavailable: 'Unavailable',
+    not_yet: 'Not valid yet',
+};
+
+function credentialStatusLabel(credential: InvitationCredential | null): string {
+    if (!credential || credential.status === 'none') return 'No credential issued';
+    switch (credential.status) {
+        case 'active':
+            return 'Active';
+        case 'issued':
+            return 'Issued (not yet activated)';
+        case 'revoked':
+            return 'Revoked';
+        case 'expired':
+            return 'Expired';
+        default:
+            return String(credential.status);
+    }
+}
+
+function credentialErrorMessage(err: unknown, fallback: string): string {
+    const status = (err as { response?: { status?: number } })?.response?.status;
+    if (status === 401) return 'Your session has expired. Please sign in again.';
+    if (status === 403) return 'You do not have permission to manage credentials for this event.';
+    if (status === 404) return 'There is no active credential to reveal for this guest.';
+    if (status === 422) {
+        const errors = validationErrors(err);
+        const first = Object.values(errors)[0];
+        if (first && first[0]) return first[0];
+        return apiErrorMessage(err) || fallback;
+    }
+    return apiErrorMessage(err) || fallback;
+}
+
+function credentialConfirmCopy(
+    action: CredentialAction,
+    name: string,
+): { title: string; message: string; confirmLabel: string; danger: boolean } {
+    switch (action) {
+        case 'reveal':
+            return {
+                title: 'Reveal entry code',
+                message: `Reveal the current entry code for ${name}? It will be shown on screen and this reveal is audited.`,
+                confirmLabel: 'Reveal code',
+                danger: false,
+            };
+        case 'resend':
+            return {
+                title: 'Resend entry credential',
+                message: `Queue another delivery of the current entry credential to ${name}? The existing code keeps working.`,
+                confirmLabel: 'Resend',
+                danger: false,
+            };
+        case 'reissue':
+            return {
+                title: 'Reissue entry credential',
+                message: `Reissue will revoke ${name}'s current code and create a new one. The old code stops working immediately.`,
+                confirmLabel: 'Reissue',
+                danger: true,
+            };
+        case 'revoke':
+            return {
+                title: 'Revoke entry credential',
+                message: `Revoke ${name}'s entry code? They will not be able to check in until a new credential is issued.`,
+                confirmLabel: 'Revoke',
+                danger: true,
+            };
+    }
+}
+
+function CredentialModal({
+    eventId,
+    guest,
+    onClose,
+    onNotify,
+}: {
+    eventId: string;
+    guest: Guest | null;
+    onClose: () => void;
+    onNotify: (message: string) => void;
+}) {
+    const guestId = guest?.id ?? null;
+    const [credential, setCredential] = useState<InvitationCredential | null>(null);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const [code, setCode] = useState<string | null>(null);
+    const [busy, setBusy] = useState<CredentialBusy | null>(null);
+    const [pending, setPending] = useState<CredentialAction | null>(null);
+    const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
+
+    const load = useCallback(async () => {
+        if (guestId === null) return;
+        setLoading(true);
+        setError(null);
+        try {
+            const { data } = await api.get<{ credential: InvitationCredential }>(
+                `/api/v1/events/${eventId}/guests/${guestId}/credential`,
+            );
+            setCredential(data.credential);
+        } catch (err) {
+            setError(credentialErrorMessage(err, 'Could not load the credential.'));
+        } finally {
+            setLoading(false);
+        }
+    }, [eventId, guestId]);
+
+    // Reset and load whenever a different guest is opened.
+    useEffect(() => {
+        setCredential(null);
+        setCode(null);
+        setCopyState('idle');
+        setError(null);
+        setPending(null);
+        setBusy(null);
+        if (guestId !== null) {
+            void load();
+        }
+    }, [guestId, load]);
+
+    const issue = async () => {
+        if (guestId === null) return;
+        setBusy('issue');
+        setError(null);
+        try {
+            const { data } = await api.post<CredentialWithCode>(
+                `/api/v1/events/${eventId}/guests/${guestId}/credential`,
+            );
+            setCredential(data.credential);
+            setCode(data.code ?? null);
+            setCopyState('idle');
+            onNotify('Entry credential issued.');
+        } catch (err) {
+            setError(credentialErrorMessage(err, 'Could not issue the credential.'));
+        } finally {
+            setBusy(null);
+        }
+    };
+
+    const runAction = async (action: CredentialAction) => {
+        if (guestId === null) return;
+        setPending(null);
+        setBusy(action);
+        setError(null);
+        try {
+            if (action === 'resend') {
+                await api.post<CredentialQueuedResponse>(
+                    `/api/v1/events/${eventId}/guests/${guestId}/credential/resend`,
+                );
+                onNotify('Entry credential queued for delivery.');
+                return;
+            }
+
+            if (action === 'revoke') {
+                const { data } = await api.post<{ credential: InvitationCredential }>(
+                    `/api/v1/events/${eventId}/guests/${guestId}/credential/revoke`,
+                );
+                setCredential(data.credential);
+                setCode(null);
+                setCopyState('idle');
+                onNotify('Entry credential revoked.');
+                return;
+            }
+
+            const { data } = await api.post<CredentialWithCode>(
+                `/api/v1/events/${eventId}/guests/${guestId}/credential/${action}`,
+            );
+            setCredential(data.credential);
+            setCode(data.code ?? null);
+            setCopyState('idle');
+            onNotify(action === 'reveal' ? 'Entry code revealed.' : 'New entry credential issued.');
+        } catch (err) {
+            setError(credentialErrorMessage(err, 'The credential action failed.'));
+        } finally {
+            setBusy(null);
+        }
+    };
+
+    const copyCode = async () => {
+        if (!code) return;
+        try {
+            await navigator.clipboard.writeText(code);
+            setCopyState('copied');
+            onNotify('Entry code copied.');
+        } catch {
+            setCopyState('error');
+        }
+    };
+
+    const hasCurrent = credential !== null && (credential.status === 'active' || credential.status === 'issued');
+    const canResend = credential?.status === 'active';
+    const confirm = pending ? credentialConfirmCopy(pending, guest?.name ?? 'this guest') : null;
+
+    return (
+        <>
+            <Modal
+                open={guest !== null}
+                title="Entry credential"
+                onClose={() => !busy && pending === null && onClose()}
+                busy={busy !== null || pending !== null}
+                maxWidth={520}
+            >
+                {guest ? (
+                    <div className="stack">
+                        <p className="muted" style={{ marginTop: 0 }}>
+                            Event-entry credential for <strong>{guest.name}</strong>. This is separate from the RSVP
+                            invitation link and is only shown when you reveal it.
+                        </p>
+
+                        {loading ? (
+                            <LoadingBlock label="Loading credential…" />
+                        ) : (
+                            <>
+                                {error ? <Alert kind="error">{error}</Alert> : null}
+
+                                <dl className="details-list">
+                                    <div>
+                                        <dt>Status</dt>
+                                        <dd>{credentialStatusLabel(credential)}</dd>
+                                    </div>
+                                    <div>
+                                        <dt>Usable now</dt>
+                                        <dd>{credential?.valid ? 'Yes' : 'No'}</dd>
+                                    </div>
+                                    <div>
+                                        <dt>Reason</dt>
+                                        <dd>
+                                            {credential
+                                                ? CREDENTIAL_REASON_LABELS[String(credential.reason)] ??
+                                                  String(credential.reason)
+                                                : '—'}
+                                        </dd>
+                                    </div>
+                                    <div>
+                                        <dt>Issued</dt>
+                                        <dd>{formatWhen(credential?.issued_at)}</dd>
+                                    </div>
+                                    <div>
+                                        <dt>Activated</dt>
+                                        <dd>{formatWhen(credential?.activated_at)}</dd>
+                                    </div>
+                                    {credential?.revoked_at ? (
+                                        <div>
+                                            <dt>Revoked</dt>
+                                            <dd>
+                                                {formatWhen(credential.revoked_at)}
+                                                {credential.revoke_reason ? ` · ${credential.revoke_reason}` : ''}
+                                            </dd>
+                                        </div>
+                                    ) : null}
+                                    {credential?.replaces_id ? (
+                                        <div>
+                                            <dt>Replaces</dt>
+                                            <dd>#{credential.replaces_id}</dd>
+                                        </div>
+                                    ) : null}
+                                </dl>
+
+                                {code ? (
+                                    <div className="credential-code" role="status" aria-live="polite">
+                                        <span className="muted small" style={{ color: '#cbd5e1' }}>
+                                            Entry code — keep private
+                                        </span>
+                                        <span className="credential-code-value">{code}</span>
+                                        <div className="row">
+                                            <button
+                                                type="button"
+                                                className="btn btn-sm btn-ghost"
+                                                onClick={copyCode}
+                                            >
+                                                {copyState === 'copied' ? 'Copied' : 'Copy code'}
+                                            </button>
+                                        </div>
+                                        <span className="credential-warning">
+                                            Share only with {guest.name}. Do not post, email or screenshot this code.
+                                        </span>
+                                        {copyState === 'error' ? (
+                                            <span className="credential-warning">
+                                                Could not copy automatically — select the code and copy it manually.
+                                            </span>
+                                        ) : null}
+                                    </div>
+                                ) : null}
+
+                                <div className="credential-actions">
+                                    {hasCurrent ? (
+                                        <>
+                                            <button
+                                                type="button"
+                                                className="btn btn-primary"
+                                                disabled={busy !== null}
+                                                onClick={() => setPending('reveal')}
+                                            >
+                                                {busy === 'reveal' ? 'Revealing…' : 'Reveal code'}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className="btn btn-ghost"
+                                                disabled={busy !== null || !canResend}
+                                                title={canResend ? undefined : 'The credential is not active yet.'}
+                                                onClick={() => setPending('resend')}
+                                            >
+                                                Resend
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className="btn btn-ghost"
+                                                disabled={busy !== null}
+                                                onClick={() => setPending('reissue')}
+                                            >
+                                                Reissue
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className="btn btn-danger"
+                                                disabled={busy !== null}
+                                                onClick={() => setPending('revoke')}
+                                            >
+                                                Revoke
+                                            </button>
+                                        </>
+                                    ) : (
+                                        <button
+                                            type="button"
+                                            className="btn btn-primary"
+                                            disabled={busy !== null}
+                                            onClick={issue}
+                                        >
+                                            {busy === 'issue' ? 'Issuing…' : 'Issue credential'}
+                                        </button>
+                                    )}
+                                    <button
+                                        type="button"
+                                        className="btn btn-link"
+                                        disabled={busy !== null}
+                                        onClick={load}
+                                    >
+                                        Refresh
+                                    </button>
+                                </div>
+                            </>
+                        )}
+
+                        <div className="modal-footer">
+                            <button type="button" className="btn btn-ghost" onClick={onClose} disabled={busy !== null}>
+                                Close
+                            </button>
+                        </div>
+                    </div>
+                ) : null}
+            </Modal>
+
+            <ConfirmDialog
+                open={pending !== null}
+                title={confirm?.title ?? ''}
+                message={confirm?.message ?? ''}
+                confirmLabel={confirm?.confirmLabel ?? 'Confirm'}
+                danger={confirm?.danger ?? false}
+                busy={busy !== null}
+                onConfirm={() => pending && runAction(pending)}
+                onCancel={() => setPending(null)}
+            />
+        </>
     );
 }
