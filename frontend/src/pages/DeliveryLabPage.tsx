@@ -280,6 +280,12 @@ export function DeliveryLabPage() {
                                     // Our own notification mail HTML, rendered for inspection.
                                     dangerouslySetInnerHTML={{ __html: preview.content.html ?? '' }}
                                 />
+                                {preview.content.text ? (
+                                    <details>
+                                        <summary className="muted small">Plain-text fallback</summary>
+                                        <p style={{ whiteSpace: 'pre-wrap', margin: '0.5rem 0' }}>{preview.content.text}</p>
+                                    </details>
+                                ) : null}
                             </div>
                         ) : (
                             <div className="card">

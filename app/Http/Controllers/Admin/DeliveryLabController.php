@@ -9,6 +9,7 @@ use App\Models\InvitationDelivery;
 use App\Notifications\InvitationNotification;
 use App\Notifications\ReminderNotification;
 use App\Support\DeliveryLab;
+use App\Support\MailDelivery;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -158,10 +159,11 @@ class DeliveryLabController extends Controller
         $notification->setDeliveryId($channel, $delivery->id);
 
         try {
-            $guest->notify($notification);
-
             if ($channel === 'mail') {
-                $delivery->forceFill(['status' => 'sent', 'sent_at' => now(), 'error' => null])->save();
+                // Synchronous send so the lab reports the real transport outcome.
+                MailDelivery::send($guest, $notification, $delivery);
+            } else {
+                $guest->notify($notification);
             }
         } catch (Throwable $e) {
             $delivery->refresh();
@@ -237,15 +239,16 @@ class DeliveryLabController extends Controller
     private function previewContent(Guest $guest, string $kind, string $channel): array
     {
         $notification = $this->notification($guest, $kind);
-        $preview = $notification->preview();
+
+        // Pass the guest so the previewed SMS/WhatsApp text is composed exactly
+        // as it is for delivery, including the personalized greeting.
+        $preview = $notification->preview($guest);
 
         if ($channel === 'mail') {
-            $mail = $notification->toMail($guest);
-
             return [
-                'subject' => (string) ($mail->subject ?? ''),
-                'html' => (string) $mail->render(),
-                'text' => implode("\n", $preview['mail']['lines'] ?? []),
+                'subject' => (string) ($preview['mail']['subject'] ?? ''),
+                'html' => (string) ($preview['mail']['html'] ?? ''),
+                'text' => (string) ($preview['mail']['text'] ?? ''),
                 'action_url' => $preview['mail']['action_url'] ?? null,
             ];
         }

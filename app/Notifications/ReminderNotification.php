@@ -6,11 +6,12 @@ use App\Models\Event;
 use App\Notifications\Channels\SmsChannel;
 use App\Notifications\Channels\WhatsAppChannel;
 use App\Support\DeliveryLab;
+use App\Support\GuestMailContent;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Mail\Markdown;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
-use Illuminate\Support\Carbon;
 
 class ReminderNotification extends Notification implements ShouldQueue
 {
@@ -45,26 +46,23 @@ class ReminderNotification extends Notification implements ShouldQueue
         return $this;
     }
 
-    public function preview(): array
+    public function preview(?object $notifiable = null): array
     {
-        $when = Carbon::parse($this->event->event_start)->timezone($this->event->timezone);
+        $mail = $this->toMail($notifiable);
 
         return [
             'mail' => [
-                'subject' => 'Reminder: '.$this->event->title,
-                'lines' => [
-                    'This is a reminder to RSVP for '.$this->event->title.'.',
-                    'Venue: '.$this->event->venue,
-                    'Starts: '.$when->toDayDateTimeString().' ('.$this->event->timezone.')',
-                ],
-                'action_text' => 'RSVP Now',
+                'subject' => (string) $mail->subject,
+                'html' => (string) $mail->render(),
+                'text' => (string) app(Markdown::class)->renderText((string) $mail->markdown, $mail->data()),
+                'action_text' => 'View Invitation & RSVP',
                 'action_url' => $this->inviteUrl,
             ],
             'sms' => [
-                'message' => 'Reminder: RSVP for '.$this->event->title.' '.$this->inviteUrl,
+                'message' => $this->smsMessage($notifiable),
             ],
             'whatsapp' => [
-                'message' => 'Reminder: RSVP for '.$this->event->title.' '.$this->inviteUrl,
+                'message' => $this->whatsAppMessage($notifiable),
             ],
         ];
     }
@@ -85,7 +83,7 @@ class ReminderNotification extends Notification implements ShouldQueue
                 continue;
             }
 
-            if ($channel === 'mail') {
+            if ($channel === 'mail' && $notifiable->routeNotificationForMail()) {
                 $channels[] = 'mail';
             }
 
@@ -102,26 +100,46 @@ class ReminderNotification extends Notification implements ShouldQueue
     }
 
     /**
-     * Get the mail representation of the notification.
+     * Build the mail representation of the reminder.
+     *
+     * Uses its own markdown view (distinct wording from the invitation) so the
+     * HTML body, plain-text fallback and previews all share one template.
      */
-    public function toMail(object $notifiable): MailMessage
+    public function toMail(?object $notifiable = null): MailMessage
     {
-        $when = Carbon::parse($this->event->event_start)->timezone($this->event->timezone);
-
         return (new MailMessage)
-            ->subject('Reminder: '.$this->event->title)
-            ->greeting('Hello '.$notifiable->name.',')
-            ->line('This is a reminder to RSVP for '.$this->event->title.'.')
-            ->line('Venue: '.$this->event->venue)
-            ->line('Starts: '.$when->toDayDateTimeString().' ('.$this->event->timezone.')')
-            ->action('RSVP Now', $this->inviteUrl);
+            ->subject($this->mailSubject())
+            ->markdown('emails.invitations.reminder', $this->mailData($notifiable));
+    }
+
+    protected function mailSubject(): string
+    {
+        return 'A Friendly Reminder — '.GuestMailContent::subjectLine($this->event->title);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    protected function mailData(?object $notifiable): array
+    {
+        $details = GuestMailContent::eventDetails($this->event);
+
+        return [
+            'guestName' => GuestMailContent::guestName($notifiable),
+            'eventName' => $this->event->title,
+            'date' => $details['date'],
+            'venue' => $details['venue'],
+            'hasDetails' => $details['hasDetails'],
+            'invitationUrl' => $this->inviteUrl,
+            'senderName' => GuestMailContent::senderName($this->event),
+        ];
     }
 
     public function toSms(object $notifiable): array
     {
         return [
             'to' => $notifiable->routeNotificationForSms(),
-            'message' => 'Reminder: RSVP for '.$this->event->title.' '.$this->inviteUrl,
+            'message' => $this->smsMessage($notifiable),
             'delivery_id' => $this->getDeliveryId('sms'),
         ];
     }
@@ -130,9 +148,61 @@ class ReminderNotification extends Notification implements ShouldQueue
     {
         return [
             'to' => $notifiable->routeNotificationForWhatsApp(),
-            'message' => 'Reminder: RSVP for '.$this->event->title.' '.$this->inviteUrl,
+            'message' => $this->whatsAppMessage($notifiable),
             'delivery_id' => $this->getDeliveryId('whatsapp'),
         ];
+    }
+
+    /**
+     * Compose the reminder SMS body — the single source of truth for the SMS
+     * text, shared by `toSms()` (delivery) and `preview()`.
+     *
+     * Deliberately worded as a reminder (distinct from the initial invitation),
+     * with the same readable spacing and the full unique URL on its own line
+     * directly after the call to action. The URL is never shortened.
+     */
+    public function smsMessage(?object $notifiable = null): string
+    {
+        return implode("\n", [
+            'A Friendly Reminder ⏰',
+            '',
+            "We're still hoping you can join us for ".$this->event->title.". There's still time to RSVP!",
+            '',
+            'RSVP here:',
+            $this->inviteUrl,
+        ]);
+    }
+
+    /**
+     * Compose the reminder WhatsApp body — the single source of truth shared by
+     * `toWhatsApp()` and `preview()`. Reminder-specific wording, WhatsApp
+     * *bold* markup, blank-line separation, and the full URL on its own line.
+     */
+    public function whatsAppMessage(?object $notifiable = null): string
+    {
+        $lines = [
+            '⏰ *A Friendly Reminder*',
+            '',
+        ];
+
+        $name = GuestMailContent::guestName($notifiable);
+
+        if ($name !== null) {
+            $lines[] = 'Hello '.$name.'! 🌸';
+            $lines[] = '';
+        }
+
+        $lines[] = "We haven't heard from you yet about *".$this->event->title."*.";
+        $lines[] = '';
+        $lines[] = "There's still time to RSVP, and we'd love to celebrate with you!";
+        $lines[] = '';
+        $lines[] = '💌 *View your invitation and RSVP:*';
+        $lines[] = '';
+        $lines[] = $this->inviteUrl;
+        $lines[] = '';
+        $lines[] = 'Looking forward to your reply! 🥂';
+
+        return implode("\n", $lines);
     }
 
     /**

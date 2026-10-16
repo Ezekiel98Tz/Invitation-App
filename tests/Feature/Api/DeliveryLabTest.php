@@ -6,6 +6,8 @@ use App\Models\Event;
 use App\Models\Guest;
 use App\Models\InvitationDelivery;
 use App\Models\User;
+use App\Notifications\InvitationNotification;
+use App\Notifications\ReminderNotification;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Notification;
@@ -98,28 +100,54 @@ class DeliveryLabTest extends TestCase
         $guest = $this->guest($owner);
         $absolute = $guest->invite_url_absolute;
 
+        $notification = new InvitationNotification($guest->event, $absolute);
+        $message = $notification->toMail($guest);
+
         $mail = $this->actingAs($owner)
             ->getJson($this->previewUrl($guest, 'invitation', 'mail'))
             ->assertOk()
             ->assertJsonPath('channel', 'mail')
-            ->assertJsonPath('content.subject', 'Invitation: '.$guest->event->title)
+            ->assertJsonPath('content.subject', (string) $message->subject)
             ->assertJsonPath('content.action_url', $absolute);
 
-        $this->assertStringContainsString($guest->event->title, (string) $mail->json('content.html'));
-        $this->assertStringContainsString('<html', strtolower((string) $mail->json('content.html')));
+        // Previewed HTML and plain text are the exact notification output.
+        $this->assertSame((string) $message->render(), (string) $mail->json('content.html'));
+
+        $html = (string) $mail->json('content.html');
+        $this->assertStringContainsString($guest->event->title, $html);
+        $this->assertStringContainsString('<html', strtolower($html));
+
+        // The RSVP button and the visible fallback link both use the complete
+        // unique invitation URL.
+        $this->assertSame(2, substr_count($html, 'href="'.$absolute.'"'));
+
+        $text = (string) $mail->json('content.text');
+        $this->assertStringContainsString('Dear Ada,', $text);
+        $this->assertStringContainsString($guest->event->title, $text);
+        $this->assertStringContainsString($absolute, $text);
+        $this->assertStringContainsString("\n\n", $text);
+
+        // The previewed SMS must be exactly what the SMS channel would send
+        // (same composer), including the complete unique URL.
+        $expectedSms = $notification->toSms($guest)['message'];
 
         $sms = $this->actingAs($owner)
             ->getJson($this->previewUrl($guest, 'invitation', 'sms'))
             ->assertOk()
-            ->assertJsonPath('content.message', 'Invitation: '.$guest->event->title.' RSVP: '.$absolute)
+            ->assertJsonPath('content.message', $expectedSms)
             ->assertJsonPath('content.link', $absolute);
 
-        $this->assertSame(strlen((string) $sms->json('content.message')), $sms->json('content.character_count'));
+        $this->assertSame(mb_strlen($expectedSms), $sms->json('content.character_count'));
+        $this->assertStringContainsString("\n\n", $expectedSms);
+
+        // The previewed WhatsApp reminder must be exactly what the WhatsApp
+        // channel would send.
+        $expectedWhatsApp = (new ReminderNotification($guest->event, $absolute))->toWhatsApp($guest)['message'];
 
         $this->actingAs($owner)
             ->getJson($this->previewUrl($guest, 'reminder', 'whatsapp'))
             ->assertOk()
-            ->assertJsonPath('content.message', 'Reminder: RSVP for '.$guest->event->title.' '.$absolute)
+            ->assertJsonPath('content.message', $expectedWhatsApp)
             ->assertJsonPath('content.link', $absolute)
             ->assertJsonStructure(['content' => ['template_indication']]);
 

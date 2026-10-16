@@ -118,9 +118,19 @@ class Guest extends Model
         return $query->whereNull('reminded_at');
     }
 
+    /**
+     * Usable email destination, or null.
+     *
+     * A missing, empty or whitespace-only address is reported as null so the
+     * mail channel is treated like the SMS/WhatsApp channels: an absent
+     * destination means the channel simply does not apply, rather than a send
+     * that silently no-ops and is recorded as accepted.
+     */
     public function routeNotificationForMail(): ?string
     {
-        return $this->email;
+        $email = trim((string) $this->email);
+
+        return $email === '' ? null : $email;
     }
 
     public function routeNotificationForSms(): ?string

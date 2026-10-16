@@ -7,13 +7,14 @@ return [
     | Application Name
     |--------------------------------------------------------------------------
     |
-    | This value is the name of your application, which will be used when the
-    | framework needs to place the application's name in a notification or
-    | other UI elements where an application name needs to be displayed.
+    | The product is branded "Invitation Studio". This name is used wherever
+    | the framework displays the application name: the mail theme header and
+    | footer, the default notification salutation, and page titles. It is fixed
+    | so the user-facing brand cannot drift with environment configuration.
     |
     */
 
-    'name' => env('APP_NAME', 'Laravel'),
+    'name' => 'Invitation Studio',
 
     /*
     |--------------------------------------------------------------------------

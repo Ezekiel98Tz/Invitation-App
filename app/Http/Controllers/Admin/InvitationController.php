@@ -39,7 +39,7 @@ class InvitationController extends Controller
 
         return response()->json([
             'event_id' => $event->id,
-            'channels' => $notification->preview(),
+            'channels' => $notification->preview($guest),
         ]);
     }
 

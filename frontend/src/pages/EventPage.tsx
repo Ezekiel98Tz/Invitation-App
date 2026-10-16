@@ -8,7 +8,7 @@ import { GuestsPanel } from '../components/GuestsPanel';
 type Tab = 'guests' | 'invitations' | 'deliveries';
 
 interface Preview {
-    mail?: { subject: string; lines: string[] };
+    mail?: { subject: string; html?: string; text?: string };
     sms?: { message: string };
     whatsapp?: { message: string };
 }
@@ -158,24 +158,31 @@ export function EventPage() {
                                 {preview.mail ? (
                                     <div className="card">
                                         <strong>Email</strong>
-                                        <div className="muted">{preview.mail.subject}</div>
-                                        <ul>
-                                            {preview.mail.lines.map((line) => (
-                                                <li key={line}>{line}</li>
-                                            ))}
-                                        </ul>
+                                        <div className="muted">Subject: {preview.mail.subject}</div>
+                                        <div
+                                            className="card"
+                                            style={{ marginTop: '0.5rem', maxHeight: 420, overflow: 'auto', background: '#fff' }}
+                                            // Trusted, server-rendered notification email HTML (same as delivery).
+                                            dangerouslySetInnerHTML={{ __html: preview.mail.html ?? '' }}
+                                        />
+                                        {preview.mail.text ? (
+                                            <details style={{ marginTop: '0.5rem' }}>
+                                                <summary className="muted small">Plain-text version</summary>
+                                                <p style={{ whiteSpace: 'pre-wrap', margin: '0.5rem 0' }}>{preview.mail.text}</p>
+                                            </details>
+                                        ) : null}
                                     </div>
                                 ) : null}
                                 {preview.sms ? (
                                     <div className="card">
                                         <strong>SMS</strong>
-                                        <div className="muted">{preview.sms.message}</div>
+                                        <div className="muted" style={{ whiteSpace: 'pre-wrap' }}>{preview.sms.message}</div>
                                     </div>
                                 ) : null}
                                 {preview.whatsapp ? (
                                     <div className="card">
                                         <strong>WhatsApp</strong>
-                                        <div className="muted">{preview.whatsapp.message}</div>
+                                        <div className="muted" style={{ whiteSpace: 'pre-wrap' }}>{preview.whatsapp.message}</div>
                                     </div>
                                 ) : null}
                             </div>

@@ -7,6 +7,7 @@ use App\Models\InvitationDelivery;
 use App\Notifications\DeliveryFailedNotification;
 use App\Notifications\InvitationNotification;
 use App\Notifications\ReminderNotification;
+use App\Support\MailDelivery;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\InteractsWithQueue;
@@ -83,12 +84,17 @@ class SendDeliveryJob implements ShouldQueue
 
         $notification->setDeliveryId($this->channel, $delivery->id);
 
+        // Email is sent synchronously so a mail transport failure is recorded
+        // against this attempt and can be retried by the queue; the exception is
+        // re-thrown. SMS/WhatsApp keep their existing channel behaviour.
+        if ($this->channel === 'mail') {
+            MailDelivery::send($guest, $notification, $delivery);
+
+            return;
+        }
+
         try {
             $guest->notify($notification);
-
-            if ($this->channel === 'mail') {
-                $delivery->forceFill(['status' => 'sent', 'sent_at' => now(), 'error' => null])->save();
-            }
         } catch (Throwable $e) {
             // Sanitized: never store raw provider text or message contents.
             $delivery->forceFill([

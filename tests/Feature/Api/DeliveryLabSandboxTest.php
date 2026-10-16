@@ -91,7 +91,8 @@ class DeliveryLabSandboxTest extends TestCase
             ->assertJsonPath('delivery.blocked', false);
 
         // Captured, not sent to a provider; no fabricated provider reference.
-        $this->assertStringContainsString('Invitation: '.$guest->event->title, (string) $response->json('delivery.captured_message'));
+        $this->assertStringContainsString($guest->event->title, (string) $response->json('delivery.captured_message'));
+        $this->assertStringContainsString("\n\n", (string) $response->json('delivery.captured_message'));
         $this->assertNull($response->json('delivery.provider_reference'));
 
         Http::assertNothingSent();
@@ -100,7 +101,8 @@ class DeliveryLabSandboxTest extends TestCase
         $this->assertTrue($delivery->meta['sandbox']);
         $this->assertTrue($delivery->meta['lab']['test']);
         $this->assertSame('captured', $delivery->meta['lab']['outcome']);
-        $this->assertStringContainsString('Invitation: ', (string) $delivery->meta['captured']['message']);
+        $this->assertStringContainsString($guest->event->title, (string) $delivery->meta['captured']['message']);
+        $this->assertStringContainsString($guest->invite_url_absolute, (string) $delivery->meta['captured']['message']);
     }
 
     public function test_blocked_recipient_is_recorded_and_never_sent(): void

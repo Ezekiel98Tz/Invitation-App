@@ -6,6 +6,7 @@ use App\Models\Guest;
 use App\Models\InvitationDelivery;
 use App\Notifications\DeliveryFailedNotification;
 use App\Notifications\ReminderNotification;
+use App\Support\MailDelivery;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\InteractsWithQueue;
@@ -51,6 +52,7 @@ class SendReminderJob implements ShouldQueue
         // deliberate new reminder (reminded_at reset) creates new rows.
         $reuseExisting = $this->attempts() > 1;
         $pending = [];
+        $rows = [];
 
         foreach ($channels as $channel) {
             $mapped = match ($channel) {
@@ -71,6 +73,7 @@ class SendReminderJob implements ShouldQueue
             }
 
             $pending[] = $mapped;
+            $rows[$mapped] = $delivery;
             $notification->setDeliveryId($mapped, $delivery->id);
         }
 
@@ -80,34 +83,34 @@ class SendReminderJob implements ShouldQueue
             return;
         }
 
-        $notification->onlyChannels($pending);
+        // Email is sent synchronously within this job (never re-queued) so a
+        // mail transport failure is recorded against the email attempt and can
+        // be retried by the queue. SMS/WhatsApp keep their existing channel
+        // behaviour and record their own outcomes.
+        if (isset($rows['mail'])) {
+            MailDelivery::send($guest, $notification, $rows['mail']);
+        }
 
-        try {
-            $guest->notify($notification);
+        $otherChannels = array_values(array_diff($pending, ['mail']));
 
-            if (in_array('mail', $pending, true)) {
-                $mailId = $notification->getDeliveryId('mail');
+        if ($otherChannels !== []) {
+            $notification->onlyChannels($otherChannels);
 
-                if ($mailId) {
-                    InvitationDelivery::whereKey($mailId)->update([
-                        'status' => 'sent',
-                        'sent_at' => now(),
-                        'error' => null,
+            try {
+                $guest->notify($notification);
+            } catch (Throwable $e) {
+                // Sanitized: never store raw provider text or message contents.
+                InvitationDelivery::where('guest_id', $guest->id)
+                    ->where('kind', 'reminder')
+                    ->where('status', 'queued')
+                    ->update([
+                        'status' => 'failed',
+                        'failed_at' => now(),
+                        'error' => 'The reminder could not be sent.',
                     ]);
-                }
-            }
-        } catch (Throwable $e) {
-            // Sanitized: never store raw provider text or message contents.
-            InvitationDelivery::where('guest_id', $guest->id)
-                ->where('kind', 'reminder')
-                ->where('status', 'queued')
-                ->update([
-                    'status' => 'failed',
-                    'failed_at' => now(),
-                    'error' => 'The reminder could not be sent.',
-                ]);
 
-            throw $e;
+                throw $e;
+            }
         }
 
         $guest->forceFill(['reminded_at' => now()])->save();
@@ -124,7 +127,7 @@ class SendReminderJob implements ShouldQueue
         $failed = InvitationDelivery::query()
             ->where('guest_id', $guest->id)
             ->where('kind', 'reminder')
-            ->where('status', 'queued')
+            ->whereNotIn('status', ['sent', 'delivered'])
             ->orderByDesc('id')
             ->first();
 
@@ -132,12 +135,15 @@ class SendReminderJob implements ShouldQueue
             return;
         }
 
+        // Sanitized: never leak raw transport text (it may contain credentials).
+        $error = $failed->error ?: MailDelivery::message($exception);
+
         $guest->event->user->notify(new DeliveryFailedNotification(
             $guest->event,
             $guest,
             'reminder',
             $failed->channel,
-            $exception->getMessage()
+            $error
         ));
     }
 }
