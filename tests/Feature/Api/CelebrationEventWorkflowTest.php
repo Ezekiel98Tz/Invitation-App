@@ -165,16 +165,16 @@ class CelebrationEventWorkflowTest extends TestCase
         Event::factory()->count(16)->create(['user_id' => $owner->id, 'celebration_id' => null]);
 
         $this->actingAs($owner)
-            ->getJson(route('api.events.index', ['standalone' => 1, 'page' => 1]))
+            ->getJson(route('api.events.index', ['standalone' => 1, 'page' => 1, 'per_page' => 10]))
             ->assertOk()
             ->assertJsonPath('total', 16)
-            ->assertJsonCount(15, 'data')
+            ->assertJsonCount(10, 'data')
             ->assertJsonPath('last_page', 2);
 
         $this->actingAs($owner)
-            ->getJson(route('api.events.index', ['standalone' => 1, 'page' => 2]))
+            ->getJson(route('api.events.index', ['standalone' => 1, 'page' => 2, 'per_page' => 10]))
             ->assertOk()
-            ->assertJsonCount(1, 'data');
+            ->assertJsonCount(6, 'data');
     }
 
     public function test_standalone_candidates_can_be_searched_by_title(): void

@@ -8,6 +8,7 @@ use App\Models\Event;
 use App\Support\AuditLogger;
 use App\Support\EventCapabilities;
 use App\Support\EventTypes;
+use App\Support\PageSize;
 use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -44,7 +45,8 @@ class EventController extends Controller
 
         $events = $query
             ->orderByDesc('event_start')
-            ->paginate(15);
+            ->orderByDesc('id')
+            ->paginate(PageSize::resolve($request));
 
         return response()->json($events);
     }

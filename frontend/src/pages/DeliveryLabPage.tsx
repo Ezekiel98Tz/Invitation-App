@@ -11,6 +11,7 @@ import type {
 } from '../lib/types';
 import { Alert, Field, LoadingBlock, StatusBadge } from '../components/ui';
 import { Modal } from '../components/Modal';
+import { useRequestGuard } from '../lib/useRequestGuard';
 
 type Channel = 'mail' | 'sms' | 'whatsapp';
 type Kind = 'invitation' | 'reminder';
@@ -45,35 +46,47 @@ export function DeliveryLabPage() {
     const [busy, setBusy] = useState(false);
     const [detail, setDetail] = useState<DeliveryLabDelivery | null>(null);
 
+    const dashboardGuard = useRequestGuard();
+    const optionsGuard = useRequestGuard();
+    const guestsGuard = useRequestGuard();
+
     const flash = (message: string) => {
         setToast(message);
         window.setTimeout(() => setToast(null), 3500);
     };
 
     const loadDashboard = useCallback(async () => {
+        const { signal, isCurrent } = dashboardGuard();
         setLoading(true);
         setError(null);
         try {
-            const { data } = await api.get<DeliveryLabDashboard>('/api/v1/delivery-lab');
+            const { data } = await api.get<DeliveryLabDashboard>('/api/v1/delivery-lab', { signal });
+            if (!isCurrent()) return;
             setDashboard(data);
         } catch (err) {
+            if (signal.aborted || !isCurrent()) return;
             setError(apiErrorMessage(err));
         } finally {
-            setLoading(false);
+            if (isCurrent()) setLoading(false);
         }
-    }, []);
+    }, [dashboardGuard]);
 
     useEffect(() => {
         void loadDashboard();
         void (async () => {
+            const { signal, isCurrent } = optionsGuard();
             try {
-                const { data } = await api.get<Paginated<EventItem>>('/api/v1/events');
+                const { data } = await api.get<Paginated<EventItem>>('/api/v1/events', {
+                    params: { per_page: 100 },
+                    signal,
+                });
+                if (!isCurrent()) return;
                 setEvents(data.data);
             } catch {
                 // non-fatal: the test panel simply has no events
             }
         })();
-    }, [loadDashboard]);
+    }, [loadDashboard, optionsGuard]);
 
     useEffect(() => {
         setPreview(null);
@@ -83,15 +96,23 @@ export function DeliveryLabPage() {
             setGuests([]);
             return;
         }
+        const { signal, isCurrent } = guestsGuard();
         void (async () => {
             try {
-                const { data } = await api.get<Paginated<Guest>>(`/api/v1/events/${eventId}/guests`);
+                // Fetch a bounded, generous page so every guest is selectable
+                // rather than silently truncating at the default page size.
+                const { data } = await api.get<Paginated<Guest>>(`/api/v1/events/${eventId}/guests`, {
+                    params: { per_page: 100 },
+                    signal,
+                });
+                if (!isCurrent()) return;
                 setGuests(data.data);
             } catch (err) {
+                if (signal.aborted || !isCurrent()) return;
                 setError(apiErrorMessage(err));
             }
         })();
-    }, [eventId]);
+    }, [eventId, guestsGuard]);
 
     const previewUrl = `/api/v1/events/${eventId}/guests/${guestId}/delivery-lab/preview`;
 

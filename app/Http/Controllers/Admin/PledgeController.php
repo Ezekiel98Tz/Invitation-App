@@ -8,6 +8,7 @@ use App\Models\Event;
 use App\Models\Pledge;
 use App\Models\PledgeFulfillment;
 use App\Services\PledgeLedger;
+use App\Support\PageSize;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -30,7 +31,20 @@ class PledgeController extends Controller
 
         $query = Pledge::query()
             ->where('event_id', $event->id)
-            ->with('fulfillments');
+            // The list only needs summary balances. Aggregate the fulfillment
+            // ledger in SQL instead of loading every fulfillment row per pledge,
+            // so a pledge with a long append-only history does not bloat the list.
+            ->withCount('fulfillments')
+            ->withSum(
+                ['fulfillments as recorded_minor' => fn ($q) => $q
+                    ->where('status', PledgeFulfillment::STATUS_RECORDED)
+                    ->whereNull('reverses_fulfillment_id')],
+                'amount_minor',
+            )
+            ->withSum(
+                ['fulfillments as reversed_minor' => fn ($q) => $q->whereNotNull('reverses_fulfillment_id')],
+                'amount_minor',
+            );
 
         if ($request->filled('status') && in_array($request->string('status')->toString(), [Pledge::STATUS_ACTIVE, Pledge::STATUS_CANCELLED], true)) {
             $query->where('status', $request->string('status')->toString());
@@ -62,7 +76,7 @@ class PledgeController extends Controller
             });
         }
 
-        $pledges = $query->orderByDesc('id')->paginate(20);
+        $pledges = $query->orderByDesc('id')->paginate(PageSize::resolve($request));
         $pledges->through(fn (Pledge $pledge) => $this->pledgePayload($pledge));
 
         return response()->json($pledges);
@@ -223,6 +237,8 @@ class PledgeController extends Controller
      */
     private function pledgePayload(Pledge $pledge): array
     {
+        $fulfilled = $this->fulfilledMinor($pledge);
+
         return [
             'id' => $pledge->id,
             'event_id' => $pledge->event_id,
@@ -236,12 +252,14 @@ class PledgeController extends Controller
             'note' => $pledge->note,
             'source' => $pledge->source,
             'status' => $pledge->status,
-            'fulfilled_minor' => $pledge->fulfilledMinor(),
-            'outstanding_minor' => $pledge->outstandingMinor(),
-            'derived_status' => $pledge->derivedStatus(),
+            'fulfilled_minor' => $fulfilled,
+            'outstanding_minor' => $pledge->outstandingMinorFrom($fulfilled),
+            'derived_status' => $pledge->derivedStatusFrom($fulfilled),
             'fulfillments_count' => $pledge->relationLoaded('fulfillments')
                 ? $pledge->fulfillments->count()
-                : null,
+                : (array_key_exists('fulfillments_count', $pledge->getAttributes())
+                    ? (int) $pledge->fulfillments_count
+                    : null),
             'fulfillments' => $pledge->relationLoaded('fulfillments')
                 ? $pledge->fulfillments
                     ->map(fn (PledgeFulfillment $fulfillment) => $this->fulfillmentPayload($fulfillment, $pledge->currency))
@@ -252,6 +270,27 @@ class PledgeController extends Controller
             'created_at' => $pledge->created_at?->toIso8601String(),
             'updated_at' => $pledge->updated_at?->toIso8601String(),
         ];
+    }
+
+    /**
+     * Net reported fulfillment in minor units for the payload.
+     *
+     * Prefers the loaded `fulfillments` relation; otherwise uses the SQL
+     * aggregates added by the list query (avoiding both an N+1 query and loading
+     * every fulfillment row); and finally falls back to the model, which is
+     * correct for a single pledge (show/create/update paths load the relation).
+     */
+    private function fulfilledMinor(Pledge $pledge): int
+    {
+        if ($pledge->relationLoaded('fulfillments')) {
+            return $pledge->fulfilledMinor();
+        }
+
+        if (array_key_exists('recorded_minor', $pledge->getAttributes())) {
+            return (int) ($pledge->recorded_minor ?? 0) - (int) ($pledge->reversed_minor ?? 0);
+        }
+
+        return $pledge->fulfilledMinor();
     }
 
     /**

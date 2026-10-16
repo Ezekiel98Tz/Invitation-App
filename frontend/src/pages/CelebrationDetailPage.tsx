@@ -7,6 +7,7 @@ import { ConfirmDialog } from '../components/ConfirmDialog';
 import { EventFormModal } from '../components/EventFormModal';
 import { PledgeSummary } from '../components/PledgeSummary';
 import { formatMoney } from '../lib/money';
+import { useRequestGuard } from '../lib/useRequestGuard';
 
 function formatWhen(iso: string | null | undefined): string {
     if (!iso) return 'Date not set';
@@ -44,60 +45,78 @@ export function CelebrationDetailPage() {
         window.setTimeout(() => setToast(null), 3500);
     };
 
-    const loadDetail = useCallback(async () => {
+    const detailGuard = useRequestGuard();
+    const candidatesGuard = useRequestGuard();
+    const pledgeGuard = useRequestGuard();
+
+    const loadDetail = useCallback(async (page = 1) => {
+        const { signal, isCurrent } = detailGuard();
         setLoading(true);
         setError(null);
         try {
-            const { data } = await api.get<CelebrationDetail>(`/api/v1/celebrations/${celebrationId}`);
+            const { data } = await api.get<CelebrationDetail>(`/api/v1/celebrations/${celebrationId}`, {
+                params: { page },
+                signal,
+            });
+            if (!isCurrent()) return;
             setDetail(data);
         } catch (err) {
+            if (signal.aborted || !isCurrent()) return;
             setError(apiErrorMessage(err));
         } finally {
-            setLoading(false);
+            if (isCurrent()) setLoading(false);
         }
-    }, [celebrationId]);
+    }, [detailGuard, celebrationId]);
 
     // Standalone candidates are fetched from the server (paginated + searchable)
     // so no eligible event is silently omitted when there are many events.
     const loadCandidates = useCallback(async (page = 1, search = '') => {
+        const { signal, isCurrent } = candidatesGuard();
         setCandidatesLoading(true);
         try {
             const { data } = await api.get<Paginated<EventItem>>('/api/v1/events', {
                 params: { standalone: 1, page, search },
+                signal,
             });
+            if (!isCurrent()) return;
             setCandidates(data.data);
             setCandidatesMeta(data);
         } catch (err) {
+            if (signal.aborted || !isCurrent()) return;
             setError(apiErrorMessage(err));
         } finally {
-            setCandidatesLoading(false);
+            if (isCurrent()) setCandidatesLoading(false);
         }
-    }, []);
+    }, [candidatesGuard]);
 
     const loadPledgeReport = useCallback(async () => {
+        const { signal, isCurrent } = pledgeGuard();
         setPledgeLoading(true);
         setPledgeError(null);
         try {
             const { data } = await api.get<CelebrationPledgeReport>(
                 `/api/v1/reports/celebrations/${celebrationId}/pledges`,
+                { signal },
             );
+            if (!isCurrent()) return;
             setPledgeReport(data);
         } catch (err) {
+            if (signal.aborted || !isCurrent()) return;
             setPledgeError(apiErrorMessage(err));
         } finally {
-            setPledgeLoading(false);
+            if (isCurrent()) setPledgeLoading(false);
         }
-    }, [celebrationId]);
+    }, [pledgeGuard, celebrationId]);
 
     useEffect(() => {
-        void loadDetail();
+        void loadDetail(1);
         void loadCandidates(1, '');
         void loadPledgeReport();
     }, [loadDetail, loadCandidates, loadPledgeReport]);
 
     const refresh = async () => {
         await Promise.all([
-            loadDetail(),
+            loadDetail(detail?.events_meta.current_page ?? 1),
             loadCandidates(candidatesMeta?.current_page ?? 1, appliedSearch),
             loadPledgeReport(),
         ]);
@@ -113,7 +132,7 @@ export function CelebrationDetailPage() {
         try {
             await api.post(`/api/v1/celebrations/${celebrationId}/events/${event.id}`);
             flash(`“${event.title}” added to this celebration.`);
-            await Promise.all([loadDetail(), loadCandidates(1, appliedSearch)]);
+            await Promise.all([loadDetail(detail?.events_meta.current_page ?? 1), loadCandidates(1, appliedSearch)]);
         } catch (err) {
             setError(apiErrorMessage(err));
         } finally {
@@ -209,6 +228,37 @@ export function CelebrationDetailPage() {
                         </table>
                     </div>
                 )}
+
+                {detail.events_meta.total > 0 ? (
+                    <div
+                        className="row between pagination"
+                        style={{ marginTop: '0.75rem' }}
+                        aria-label="Grouped events pagination"
+                    >
+                        <span className="muted small">
+                            Page {detail.events_meta.current_page} of {detail.events_meta.last_page} ·{' '}
+                            {detail.events_meta.total} event{detail.events_meta.total === 1 ? '' : 's'}
+                        </span>
+                        <div className="row">
+                            <button
+                                type="button"
+                                className="btn btn-sm btn-ghost"
+                                disabled={!detail.events_meta.prev_page_url}
+                                onClick={() => void loadDetail(detail.events_meta.current_page - 1)}
+                            >
+                                Previous
+                            </button>
+                            <button
+                                type="button"
+                                className="btn btn-sm btn-ghost"
+                                disabled={!detail.events_meta.next_page_url}
+                                onClick={() => void loadDetail(detail.events_meta.current_page + 1)}
+                            >
+                                Next
+                            </button>
+                        </div>
+                    </div>
+                ) : null}
             </div>
 
             <div className="card">

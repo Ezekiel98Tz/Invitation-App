@@ -5,6 +5,9 @@ import type { EventItem, EventReport, Paginated } from '../lib/types';
 import { Alert, LoadingBlock } from '../components/ui';
 import { EventCard } from '../components/EventCard';
 import { EventFormModal } from '../components/EventFormModal';
+import { useRequestGuard } from '../lib/useRequestGuard';
+
+const PAGE_SIZE = 20;
 
 export function DashboardPage() {
     const navigate = useNavigate();
@@ -16,22 +19,29 @@ export function DashboardPage() {
     const [modalOpen, setModalOpen] = useState(false);
     const [editingEvent, setEditingEvent] = useState<EventItem | null>(null);
 
+    const beginRequest = useRequestGuard();
+
     const load = useCallback(async () => {
+        const { signal, isCurrent } = beginRequest();
         setLoading(true);
         setError(null);
         try {
+            // Both endpoints use the same page size and ordering, so the report's
+            // per-event stats line up 1:1 with the rendered page of events.
             const [listRes, reportRes] = await Promise.all([
-                api.get<Paginated<EventItem>>('/api/v1/events'),
-                api.get<EventReport>('/api/v1/reports/events'),
+                api.get<Paginated<EventItem>>('/api/v1/events', { params: { per_page: PAGE_SIZE }, signal }),
+                api.get<EventReport>('/api/v1/reports/events', { params: { per_page: PAGE_SIZE }, signal }),
             ]);
+            if (!isCurrent()) return;
             setEvents(listRes.data.data);
             setReport(reportRes.data);
         } catch (err) {
+            if (signal.aborted || !isCurrent()) return;
             setError(apiErrorMessage(err));
         } finally {
-            setLoading(false);
+            if (isCurrent()) setLoading(false);
         }
-    }, []);
+    }, [beginRequest]);
 
     useEffect(() => {
         void load();

@@ -10,6 +10,7 @@ use App\Models\InvitationCredential;
 use App\Services\CredentialIssuer;
 use App\Support\AuditLogger;
 use App\Support\CredentialAccess;
+use App\Support\PageSize;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -145,17 +146,32 @@ class CheckInController extends Controller
     {
         $this->authorize('view', $event);
 
-        $attendances = Attendance::query()
+        $query = Attendance::query()
             ->where('event_id', $event->id)
-            ->with(['guest:id,name'])
+            ->with(['guest:id,name']);
+
+        if ($request->filled('status')
+            && in_array($request->string('status')->toString(), [Attendance::STATUS_VALID, Attendance::STATUS_REVERSED], true)) {
+            $query->where('status', $request->string('status')->toString());
+        }
+
+        // Bounded, navigable pagination instead of a silent hard cap. `id` is a
+        // unique tie-breaker, so the order is deterministic across pages.
+        $attendances = $query
             ->orderByDesc('id')
-            ->limit(100)
-            ->get()
-            ->map(fn (Attendance $attendance) => $this->attendancePayload($attendance));
+            ->paginate(PageSize::resolve($request));
+
+        $attendances->through(fn (Attendance $attendance) => $this->attendancePayload($attendance));
 
         return response()->json([
             'checked_in' => Attendance::where('event_id', $event->id)->where('status', Attendance::STATUS_VALID)->count(),
-            'attendances' => $attendances,
+            'attendances' => $attendances->items(),
+            'current_page' => $attendances->currentPage(),
+            'last_page' => $attendances->lastPage(),
+            'per_page' => $attendances->perPage(),
+            'total' => $attendances->total(),
+            'prev_page_url' => $attendances->previousPageUrl(),
+            'next_page_url' => $attendances->nextPageUrl(),
         ]);
     }
 

@@ -12,6 +12,10 @@ import { Alert, LoadingBlock, StatusBadge } from '../components/ui';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { FeatureDisabled } from '../components/FeatureDisabled';
 import { isCapabilityEnabled } from '../lib/capabilities';
+import { useRequestGuard } from '../lib/useRequestGuard';
+
+const DEFAULT_PAGE_SIZE = 20;
+const PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
 
 interface StateCopy {
     title: string;
@@ -109,6 +113,7 @@ export function CheckInPage() {
     const [attendances, setAttendances] = useState<AttendanceList | null>(null);
     const [loadingArrivals, setLoadingArrivals] = useState(true);
     const [arrivalsError, setArrivalsError] = useState<string | null>(null);
+    const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
 
     const [reverseTarget, setReverseTarget] = useState<Attendance | null>(null);
     const [reverseReason, setReverseReason] = useState('');
@@ -133,18 +138,30 @@ export function CheckInPage() {
         }
     }, [eventId]);
 
-    const loadAttendances = useCallback(async () => {
-        setLoadingArrivals(true);
-        setArrivalsError(null);
-        try {
-            const { data } = await api.get<AttendanceList>(`/api/v1/events/${eventId}/attendances`);
-            setAttendances(data);
-        } catch (err) {
-            setArrivalsError(describeCheckInError(err, 'Could not load arrivals.'));
-        } finally {
-            setLoadingArrivals(false);
-        }
-    }, [eventId]);
+    const beginRequest = useRequestGuard();
+
+    const loadAttendances = useCallback(
+        async (page: number, size: number) => {
+            const { signal, isCurrent } = beginRequest();
+            setLoadingArrivals(true);
+            setArrivalsError(null);
+            try {
+                const { data } = await api.get<AttendanceList>(`/api/v1/events/${eventId}/attendances`, {
+                    params: { page, per_page: size },
+                    signal,
+                });
+                // Ignore a response a newer request has superseded.
+                if (!isCurrent()) return;
+                setAttendances(data);
+            } catch (err) {
+                if (signal.aborted || !isCurrent()) return;
+                setArrivalsError(describeCheckInError(err, 'Could not load arrivals.'));
+            } finally {
+                if (isCurrent()) setLoadingArrivals(false);
+            }
+        },
+        [beginRequest, eventId],
+    );
 
     useEffect(() => {
         void loadEvent();
@@ -157,8 +174,15 @@ export function CheckInPage() {
     useEffect(() => {
         if (eventState === 'loading') return;
         if (eventState === 'loaded' && event && !isCapabilityEnabled(event, 'check_in')) return;
-        void loadAttendances();
+        void loadAttendances(1, DEFAULT_PAGE_SIZE);
     }, [eventState, event, loadAttendances]);
+
+    const changePageSize = (size: number) => {
+        setPageSize(size);
+        void loadAttendances(1, size);
+    };
+
+    const refreshAttendances = () => loadAttendances(attendances?.current_page ?? 1, pageSize);
 
     const runLookup = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -200,7 +224,7 @@ export function CheckInPage() {
             setConfirmOpen(false);
             resetLookup();
             notify(`Checked in ${name}.`);
-            await loadAttendances();
+            await refreshAttendances();
         } catch (err) {
             setConfirmOpen(false);
             setActionError(describeCheckInError(err, 'Check-in failed.'));
@@ -223,7 +247,7 @@ export function CheckInPage() {
             setOverrideReason('');
             resetLookup();
             notify(`Checked in ${name} with an override.`);
-            await loadAttendances();
+            await refreshAttendances();
         } catch (err) {
             setOverrideOpen(false);
             setActionError(describeCheckInError(err, 'Override check-in failed.'));
@@ -244,7 +268,7 @@ export function CheckInPage() {
             setReverseTarget(null);
             setReverseReason('');
             notify('Check-in reversed.');
-            await loadAttendances();
+            await refreshAttendances();
         } catch (err) {
             setReverseTarget(null);
             setActionError(describeCheckInError(err, 'Reversal failed.'));
@@ -280,7 +304,7 @@ export function CheckInPage() {
                         {event?.title ?? 'Event'} · look up a guest by their entry code, then confirm the arrival.
                     </p>
                 </div>
-                <button type="button" className="btn btn-ghost" onClick={loadAttendances} disabled={loadingArrivals}>
+                <button type="button" className="btn btn-ghost" onClick={refreshAttendances} disabled={loadingArrivals}>
                     {loadingArrivals ? 'Refreshing…' : 'Refresh arrivals'}
                 </button>
             </div>
@@ -452,6 +476,59 @@ export function CheckInPage() {
                             ))}
                         </ul>
                     )}
+
+                    {attendances && attendances.total > 0 ? (
+                        <div
+                            className="row between pagination"
+                            style={{ marginTop: '0.75rem' }}
+                            aria-label="Arrivals pagination"
+                        >
+                            <div className="row" style={{ gap: '0.75rem', alignItems: 'center' }}>
+                                <span className="muted small">
+                                    Page {attendances.current_page} of {attendances.last_page} · {attendances.total} record
+                                    {attendances.total === 1 ? '' : 's'}
+                                </span>
+                                <label
+                                    className="muted small"
+                                    htmlFor="arrivals-page-size"
+                                    style={{ display: 'inline-flex', gap: '0.35rem', alignItems: 'center' }}
+                                >
+                                    Rows
+                                    <select
+                                        id="arrivals-page-size"
+                                        className="select"
+                                        style={{ width: 'auto' }}
+                                        value={pageSize}
+                                        onChange={(e) => changePageSize(Number(e.target.value))}
+                                    >
+                                        {PAGE_SIZE_OPTIONS.map((size) => (
+                                            <option key={size} value={size}>
+                                                {size}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </label>
+                            </div>
+                            <div className="row">
+                                <button
+                                    type="button"
+                                    className="btn btn-sm btn-ghost"
+                                    disabled={!attendances.prev_page_url}
+                                    onClick={() => void loadAttendances(attendances.current_page - 1, pageSize)}
+                                >
+                                    Previous
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn btn-sm btn-ghost"
+                                    disabled={!attendances.next_page_url}
+                                    onClick={() => void loadAttendances(attendances.current_page + 1, pageSize)}
+                                >
+                                    Next
+                                </button>
+                            </div>
+                        </div>
+                    ) : null}
                 </section>
             </div>
 

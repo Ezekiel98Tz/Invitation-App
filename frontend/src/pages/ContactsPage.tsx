@@ -2,10 +2,14 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, apiErrorMessage, validationErrors } from '../lib/api';
 import type { Contact, ContactPage } from '../lib/types';
+import { useRequestGuard } from '../lib/useRequestGuard';
 import { Alert, Field, LoadingBlock } from '../components/ui';
 import { Modal } from '../components/Modal';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { ActionMenu } from '../components/ActionMenu';
+
+const DEFAULT_PAGE_SIZE = 20;
+const PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
 
 interface ContactForm {
     id: number | null;
@@ -36,6 +40,7 @@ export function ContactsPage() {
 
     const [search, setSearch] = useState('');
     const [appliedSearch, setAppliedSearch] = useState('');
+    const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
 
     const [modalOpen, setModalOpen] = useState(false);
     const [form, setForm] = useState<ContactForm>(emptyForm);
@@ -50,35 +55,53 @@ export function ContactsPage() {
         window.setTimeout(() => setToast(null), 3500);
     };
 
-    const load = useCallback(async (page = 1, term = '') => {
-        setLoading(true);
-        setError(null);
-        try {
-            const { data } = await api.get<ContactPage>('/api/v1/contacts', {
-                params: { page, search: term },
-            });
-            setContacts(data.data);
-            setPagination(data);
-        } catch (err) {
-            setError(apiErrorMessage(err));
-        } finally {
-            setLoading(false);
-        }
-    }, []);
+    const beginRequest = useRequestGuard();
+
+    const load = useCallback(
+        async (page: number, term: string, size: number) => {
+            const { signal, isCurrent } = beginRequest();
+            setLoading(true);
+            setError(null);
+            try {
+                const { data } = await api.get<ContactPage>('/api/v1/contacts', {
+                    params: { page, search: term, per_page: size },
+                    signal,
+                });
+                // Ignore a response a newer request has superseded: out-of-order
+                // replies must never overwrite fresher results.
+                if (!isCurrent()) return;
+                setContacts(data.data);
+                setPagination(data);
+            } catch (err) {
+                // A cancelled request is expected when the user pages/searches
+                // quickly; never surface it as an error.
+                if (signal.aborted || !isCurrent()) return;
+                setError(apiErrorMessage(err));
+            } finally {
+                if (isCurrent()) setLoading(false);
+            }
+        },
+        [beginRequest],
+    );
 
     useEffect(() => {
-        void load(1, '');
+        void load(1, '', DEFAULT_PAGE_SIZE);
     }, [load]);
 
     const applySearch = () => {
         setAppliedSearch(search);
-        void load(1, search);
+        void load(1, search, pageSize);
     };
 
     const clearFilters = () => {
         setSearch('');
         setAppliedSearch('');
-        void load(1, '');
+        void load(1, '', pageSize);
+    };
+
+    const changePageSize = (size: number) => {
+        setPageSize(size);
+        void load(1, appliedSearch, size);
     };
 
     const openEdit = (contact: Contact) => {
@@ -102,7 +125,7 @@ export function ContactsPage() {
             await api.patch(`/api/v1/contacts/${form.id}`, payload);
             setModalOpen(false);
             flash('Contact updated.');
-            await load(pagination?.current_page ?? 1, appliedSearch);
+            await load(pagination?.current_page ?? 1, appliedSearch, pageSize);
         } catch (err) {
             setErrors(validationErrors(err));
             if (!Object.keys(validationErrors(err)).length) {
@@ -127,7 +150,7 @@ export function ContactsPage() {
                     ? `"${name}" deleted. ${data.detached_guests} guest(s) were kept and detached.`
                     : `"${name}" deleted.`,
             );
-            await load(pagination?.current_page ?? 1, appliedSearch);
+            await load(pagination?.current_page ?? 1, appliedSearch, pageSize);
         } catch (err) {
             setError(apiErrorMessage(err));
         } finally {
@@ -231,17 +254,40 @@ export function ContactsPage() {
                 </div>
             )}
 
-            {pagination && pagination.last_page > 1 ? (
-                <div className="row between pagination">
-                    <span className="muted">
-                        Page {pagination.current_page} of {pagination.last_page}
-                    </span>
+            {pagination && (pagination.total ?? 0) > 0 ? (
+                <div className="row between pagination" aria-label="Contacts pagination">
+                    <div className="row" style={{ gap: '0.75rem', alignItems: 'center' }}>
+                        <span className="muted">
+                            Page {pagination.current_page} of {pagination.last_page} · {pagination.total ?? 0} contact
+                            {(pagination.total ?? 0) === 1 ? '' : 's'}
+                        </span>
+                        <label
+                            className="muted small"
+                            htmlFor="contact-page-size"
+                            style={{ display: 'inline-flex', gap: '0.35rem', alignItems: 'center' }}
+                        >
+                            Rows
+                            <select
+                                id="contact-page-size"
+                                className="select"
+                                style={{ width: 'auto' }}
+                                value={pageSize}
+                                onChange={(e) => changePageSize(Number(e.target.value))}
+                            >
+                                {PAGE_SIZE_OPTIONS.map((size) => (
+                                    <option key={size} value={size}>
+                                        {size}
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
+                    </div>
                     <div className="row">
                         <button
                             type="button"
                             className="btn btn-sm btn-ghost"
                             disabled={!pagination.prev_page_url}
-                            onClick={() => load(pagination.current_page - 1, appliedSearch)}
+                            onClick={() => void load(pagination.current_page - 1, appliedSearch, pageSize)}
                         >
                             Previous
                         </button>
@@ -249,7 +295,7 @@ export function ContactsPage() {
                             type="button"
                             className="btn btn-sm btn-ghost"
                             disabled={!pagination.next_page_url}
-                            onClick={() => load(pagination.current_page + 1, appliedSearch)}
+                            onClick={() => void load(pagination.current_page + 1, appliedSearch, pageSize)}
                         >
                             Next
                         </button>

@@ -173,7 +173,17 @@ class Pledge extends Model
      */
     public function outstandingMinor(): int
     {
-        return max(0, (int) $this->pledged_amount_minor - $this->fulfilledMinor());
+        return $this->outstandingMinorFrom($this->fulfilledMinor());
+    }
+
+    /**
+     * Outstanding balance given an already-computed net fulfilled amount. Lets
+     * callers that obtained the fulfilled total from a database aggregate (rather
+     * than the loaded relation) reuse exactly the same clamping rule.
+     */
+    public function outstandingMinorFrom(int $fulfilled): int
+    {
+        return max(0, (int) $this->pledged_amount_minor - $fulfilled);
     }
 
     /**
@@ -181,12 +191,21 @@ class Pledge extends Model
      */
     public function derivedStatus(): string
     {
+        return $this->derivedStatusFrom($this->fulfilledMinor());
+    }
+
+    /**
+     * Derived lifecycle state given an already-computed net fulfilled amount, so
+     * a list query that aggregated the fulfillments can derive the same status
+     * without loading every fulfillment row.
+     */
+    public function derivedStatusFrom(int $fulfilled): string
+    {
         if ($this->isCancelled()) {
             return self::DERIVED_CANCELLED;
         }
 
         $pledged = (int) $this->pledged_amount_minor;
-        $fulfilled = $this->fulfilledMinor();
 
         if ($fulfilled > $pledged) {
             return self::DERIVED_OVER_FULFILLED;

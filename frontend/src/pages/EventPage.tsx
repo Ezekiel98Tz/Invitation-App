@@ -6,8 +6,11 @@ import { isCapabilityEnabled } from '../lib/capabilities';
 import { Alert, LoadingBlock } from '../components/ui';
 import { GuestsPanel } from '../components/GuestsPanel';
 import { EventFormModal } from '../components/EventFormModal';
+import { useRequestGuard } from '../lib/useRequestGuard';
 
 type Tab = 'guests' | 'invitations' | 'deliveries';
+
+const PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
 
 interface Preview {
     mail?: { subject: string; html?: string; text?: string };
@@ -26,7 +29,13 @@ export function EventPage() {
 
     const [preview, setPreview] = useState<Preview | null>(null);
     const [failed, setFailed] = useState<Delivery[]>([]);
+    const [failedPage, setFailedPage] = useState<Paginated<Delivery> | null>(null);
+    const [failedPageSize, setFailedPageSize] = useState<number>(20);
     const [editOpen, setEditOpen] = useState(false);
+
+    const eventGuard = useRequestGuard();
+    const previewGuard = useRequestGuard();
+    const failedGuard = useRequestGuard();
 
     const notify = (message: string) => {
         setToast(message);
@@ -34,36 +43,60 @@ export function EventPage() {
     };
 
     const loadEvent = useCallback(async () => {
+        const { signal, isCurrent } = eventGuard();
         try {
-            const { data } = await api.get<EventItem>(`/api/v1/events/${eventId}`);
+            const { data } = await api.get<EventItem>(`/api/v1/events/${eventId}`, { signal });
+            if (!isCurrent()) return;
             setEvent(data);
         } catch (err) {
+            if (signal.aborted || !isCurrent()) return;
             setError(apiErrorMessage(err));
         }
-    }, [eventId]);
+    }, [eventGuard, eventId]);
 
     const loadPreview = useCallback(async () => {
+        const { signal, isCurrent } = previewGuard();
         try {
-            const { data } = await api.get<{ channels: Preview }>(`/api/v1/events/${eventId}/invitations/preview`);
+            const { data } = await api.get<{ channels: Preview }>(`/api/v1/events/${eventId}/invitations/preview`, {
+                signal,
+            });
+            if (!isCurrent()) return;
             setPreview(data.channels);
         } catch {
             // preview is best-effort
         }
-    }, [eventId]);
+    }, [previewGuard, eventId]);
 
-    const loadFailed = useCallback(async () => {
-        try {
-            const { data } = await api.get<Paginated<Delivery>>(`/api/v1/events/${eventId}/deliveries/failed`);
-            setFailed(data.data);
-        } catch (err) {
-            setError(apiErrorMessage(err));
-        }
-    }, [eventId]);
+    const loadFailed = useCallback(
+        async (page: number, size: number) => {
+            const { signal, isCurrent } = failedGuard();
+            try {
+                const { data } = await api.get<Paginated<Delivery>>(`/api/v1/events/${eventId}/deliveries/failed`, {
+                    params: { page, per_page: size },
+                    signal,
+                });
+                if (!isCurrent()) return;
+                setFailed(data.data);
+                setFailedPage(data);
+            } catch (err) {
+                if (signal.aborted || !isCurrent()) return;
+                setError(apiErrorMessage(err));
+            }
+        },
+        [failedGuard, eventId],
+    );
+
+    const reloadFailed = () => loadFailed(failedPage?.current_page ?? 1, failedPageSize);
+
+    const changeFailedPageSize = (size: number) => {
+        setFailedPageSize(size);
+        void loadFailed(1, size);
+    };
 
     useEffect(() => {
         void loadEvent();
         void loadPreview();
-        void loadFailed();
+        void loadFailed(1, 20);
     }, [loadEvent, loadPreview, loadFailed]);
 
     const sendInvitations = async () => {
@@ -72,7 +105,7 @@ export function EventPage() {
         try {
             const { data } = await api.post<{ queued: number }>(`/api/v1/events/${eventId}/invitations/send`);
             notify(`Invitations queued: ${data.queued}`);
-            await loadFailed();
+            await reloadFailed();
         } catch (err) {
             setError(apiErrorMessage(err));
         } finally {
@@ -84,7 +117,7 @@ export function EventPage() {
         try {
             await api.post(`/api/v1/events/${eventId}/deliveries/${delivery.id}/retry`);
             notify('Retry queued.');
-            await loadFailed();
+            await reloadFailed();
         } catch (err) {
             setError(apiErrorMessage(err));
         }
@@ -95,7 +128,7 @@ export function EventPage() {
         try {
             const { data } = await api.post<{ queued: number }>(`/api/v1/events/${eventId}/deliveries/retry-failed`);
             notify(`Queued: ${data.queued}`);
-            await loadFailed();
+            await reloadFailed();
         } catch (err) {
             setError(apiErrorMessage(err));
         } finally {
@@ -248,7 +281,7 @@ export function EventPage() {
                 {tab === 'deliveries' ? (
                     <div className="stack">
                         <div className="row">
-                            <button className="btn btn-ghost" onClick={loadFailed}>
+                            <button className="btn btn-ghost" onClick={reloadFailed}>
                                 Refresh
                             </button>
                             <button className="btn btn-primary" disabled={busy || failed.length === 0} onClick={retryAll}>
@@ -287,6 +320,54 @@ export function EventPage() {
                                 </table>
                             </div>
                         )}
+
+                        {failedPage && (failedPage.total ?? 0) > 0 ? (
+                            <div className="row between pagination" aria-label="Failed deliveries pagination">
+                                <div className="row" style={{ gap: '0.75rem', alignItems: 'center' }}>
+                                    <span className="muted small">
+                                        Page {failedPage.current_page} of {failedPage.last_page} · {failedPage.total ?? 0} failed
+                                    </span>
+                                    <label
+                                        className="muted small"
+                                        htmlFor="failed-page-size"
+                                        style={{ display: 'inline-flex', gap: '0.35rem', alignItems: 'center' }}
+                                    >
+                                        Rows
+                                        <select
+                                            id="failed-page-size"
+                                            className="select"
+                                            style={{ width: 'auto' }}
+                                            value={failedPageSize}
+                                            onChange={(e) => changeFailedPageSize(Number(e.target.value))}
+                                        >
+                                            {PAGE_SIZE_OPTIONS.map((size) => (
+                                                <option key={size} value={size}>
+                                                    {size}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </label>
+                                </div>
+                                <div className="row">
+                                    <button
+                                        type="button"
+                                        className="btn btn-sm btn-ghost"
+                                        disabled={!failedPage.prev_page_url}
+                                        onClick={() => void loadFailed(failedPage.current_page - 1, failedPageSize)}
+                                    >
+                                        Previous
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn btn-sm btn-ghost"
+                                        disabled={!failedPage.next_page_url}
+                                        onClick={() => void loadFailed(failedPage.current_page + 1, failedPageSize)}
+                                    >
+                                        Next
+                                    </button>
+                                </div>
+                            </div>
+                        ) : null}
                     </div>
                 ) : null}
             </div>

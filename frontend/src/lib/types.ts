@@ -75,6 +75,7 @@ export interface Celebration {
 export interface CelebrationDetail {
     celebration: Celebration;
     events: EventItem[];
+    events_meta: PageMeta;
 }
 
 export interface Contact {
@@ -190,6 +191,16 @@ export interface Paginated<T> {
     per_page?: number;
 }
 
+/** Pagination metadata for hand-shaped (non-Laravel-paginator) list responses. */
+export interface PageMeta {
+    current_page: number;
+    last_page: number;
+    per_page: number;
+    total: number;
+    prev_page_url: string | null;
+    next_page_url: string | null;
+}
+
 export interface Rsvp {
     attending_count: number;
     answers: Record<string, unknown> | null;
@@ -299,7 +310,7 @@ export interface Attendance {
     note: string | null;
 }
 
-export interface AttendanceList {
+export interface AttendanceList extends PageMeta {
     checked_in: number;
     attendances: Attendance[];
 }
@@ -406,7 +417,7 @@ export interface EventSummary {
     guests_responded: number;
 }
 
-export interface EventReport {
+export interface EventReport extends PageMeta {
     total_events: number;
     events: EventSummary[];
 }
@@ -681,8 +692,18 @@ export interface PledgeImportUploadResponse {
     columns: string[];
     mapping: PledgeImportMapping;
     row_count: number;
+    /** Configured maximum data rows for one workbook. */
+    max_rows: number;
     recognition: PledgeImportRecognition;
     sample: PledgeImportSampleRow[];
+}
+
+/** Bounded preview pagination metadata. */
+export interface PledgeImportPreviewMeta {
+    page: number;
+    per_page: number;
+    last_page: number;
+    total_rows: number;
 }
 
 /** `POST events/{event}/pledges/import/{batch}/preview` response. */
@@ -691,7 +712,11 @@ export interface PledgeImportPreviewResponse {
     mapping: PledgeImportMapping;
     mode: PledgeImportMode;
     counts: PledgeImportCounts;
+    /** One bounded page of rows; `counts`/`preview` still describe the whole file. */
     rows: PledgeImportRow[];
+    /** Data-row numbers that are ambiguous across the WHOLE file (all pages). */
+    ambiguous_rows: number[];
+    preview: PledgeImportPreviewMeta;
 }
 
 /** `POST events/{event}/pledges/import/{batch}/confirm` response. */

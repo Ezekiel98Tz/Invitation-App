@@ -10,6 +10,10 @@ import { FeatureDisabled } from '../components/FeatureDisabled';
 import { PledgeFormModal } from '../components/PledgeFormModal';
 import { PledgeStatusBadge } from '../components/PledgeBadges';
 import { PledgeSummary } from '../components/PledgeSummary';
+import { useRequestGuard } from '../lib/useRequestGuard';
+
+const DEFAULT_PAGE_SIZE = 20;
+const PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
 
 const METHOD_OPTIONS: { value: string; label: string }[] = [
     { value: 'cash', label: 'Cash' },
@@ -75,6 +79,7 @@ export function PledgesPage() {
     const [appliedSearch, setAppliedSearch] = useState('');
     const [appliedStatus, setAppliedStatus] = useState('');
     const [appliedMethod, setAppliedMethod] = useState('');
+    const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
 
     const [formOpen, setFormOpen] = useState(false);
     const [editing, setEditing] = useState<Pledge | null>(null);
@@ -107,23 +112,32 @@ export function PledgesPage() {
         }
     }, [eventId]);
 
+    const beginRequest = useRequestGuard();
+
     const fetchPledges = useCallback(
-        async (page: number, s: string, st: string, me: string) => {
+        async (page: number, s: string, st: string, me: string, size: number) => {
+            const { signal, isCurrent } = beginRequest();
             setLoading(true);
             setError(null);
             try {
                 const { data } = await api.get<PledgePage>(`/api/v1/events/${eventId}/pledges`, {
-                    params: { page, search: s, status: st, method: me },
+                    params: { page, search: s, status: st, method: me, per_page: size },
+                    signal,
                 });
+                // Ignore a response a newer request has superseded.
+                if (!isCurrent()) return;
                 setPledges(data.data);
                 setPagination(data);
             } catch (err) {
+                // A cancelled request is expected when the user pages/filters
+                // quickly; never surface it as an error.
+                if (signal.aborted || !isCurrent()) return;
                 setError(apiErrorMessage(err));
             } finally {
-                setLoading(false);
+                if (isCurrent()) setLoading(false);
             }
         },
-        [eventId],
+        [beginRequest, eventId],
     );
 
     useEffect(() => {
@@ -138,7 +152,7 @@ export function PledgesPage() {
         if (eventState === 'loading') return;
         if (eventState === 'loaded' && event && !isCapabilityEnabled(event, 'contributions')) return;
         void loadSummary();
-        void fetchPledges(1, '', '', '');
+        void fetchPledges(1, '', '', '', DEFAULT_PAGE_SIZE);
     }, [eventState, event, loadSummary, fetchPledges]);
 
     const currentPage = pagination?.current_page ?? 1;
@@ -146,16 +160,16 @@ export function PledgesPage() {
 
     const refresh = useCallback(async () => {
         await Promise.all([
-            fetchPledges(currentPage, appliedSearch, appliedStatus, appliedMethod),
+            fetchPledges(currentPage, appliedSearch, appliedStatus, appliedMethod, pageSize),
             loadSummary(),
         ]);
-    }, [fetchPledges, loadSummary, currentPage, appliedSearch, appliedStatus, appliedMethod]);
+    }, [fetchPledges, loadSummary, currentPage, appliedSearch, appliedStatus, appliedMethod, pageSize]);
 
     const applyFilters = () => {
         setAppliedSearch(search);
         setAppliedStatus(status);
         setAppliedMethod(method);
-        void fetchPledges(1, search, status, method);
+        void fetchPledges(1, search, status, method, pageSize);
     };
 
     const clearFilters = () => {
@@ -165,7 +179,12 @@ export function PledgesPage() {
         setAppliedSearch('');
         setAppliedStatus('');
         setAppliedMethod('');
-        void fetchPledges(1, '', '', '');
+        void fetchPledges(1, '', '', '', pageSize);
+    };
+
+    const changePageSize = (size: number) => {
+        setPageSize(size);
+        void fetchPledges(1, appliedSearch, appliedStatus, appliedMethod, size);
     };
 
     const openCreate = () => {
@@ -188,7 +207,7 @@ export function PledgesPage() {
             setAppliedSearch(search);
             setAppliedStatus(status);
             setAppliedMethod(method);
-            await Promise.all([fetchPledges(1, search, status, method), loadSummary()]);
+            await Promise.all([fetchPledges(1, search, status, method, pageSize), loadSummary()]);
         }
     };
 
@@ -478,18 +497,47 @@ export function PledgesPage() {
                     </div>
                 )}
 
-                {pagination && pagination.last_page > 1 ? (
-                    <div className="row between pagination">
-                        <span className="muted">
-                            Page {pagination.current_page} of {pagination.last_page}
-                        </span>
+                {pagination && (pagination.total ?? 0) > 0 ? (
+                    <div className="row between pagination" aria-label="Pledges pagination">
+                        <div className="row" style={{ gap: '0.75rem', alignItems: 'center' }}>
+                            <span className="muted">
+                                Page {pagination.current_page} of {pagination.last_page} · {pagination.total ?? 0} pledge
+                                {(pagination.total ?? 0) === 1 ? '' : 's'}
+                            </span>
+                            <label
+                                className="muted small"
+                                htmlFor="pledge-page-size"
+                                style={{ display: 'inline-flex', gap: '0.35rem', alignItems: 'center' }}
+                            >
+                                Rows
+                                <select
+                                    id="pledge-page-size"
+                                    className="select"
+                                    style={{ width: 'auto' }}
+                                    value={pageSize}
+                                    onChange={(e) => changePageSize(Number(e.target.value))}
+                                >
+                                    {PAGE_SIZE_OPTIONS.map((size) => (
+                                        <option key={size} value={size}>
+                                            {size}
+                                        </option>
+                                    ))}
+                                </select>
+                            </label>
+                        </div>
                         <div className="row">
                             <button
                                 type="button"
                                 className="btn btn-sm btn-ghost"
                                 disabled={!pagination.prev_page_url}
                                 onClick={() =>
-                                    fetchPledges(pagination.current_page - 1, appliedSearch, appliedStatus, appliedMethod)
+                                    fetchPledges(
+                                        pagination.current_page - 1,
+                                        appliedSearch,
+                                        appliedStatus,
+                                        appliedMethod,
+                                        pageSize,
+                                    )
                                 }
                             >
                                 Previous
@@ -499,7 +547,13 @@ export function PledgesPage() {
                                 className="btn btn-sm btn-ghost"
                                 disabled={!pagination.next_page_url}
                                 onClick={() =>
-                                    fetchPledges(pagination.current_page + 1, appliedSearch, appliedStatus, appliedMethod)
+                                    fetchPledges(
+                                        pagination.current_page + 1,
+                                        appliedSearch,
+                                        appliedStatus,
+                                        appliedMethod,
+                                        pageSize,
+                                    )
                                 }
                             >
                                 Next

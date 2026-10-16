@@ -7,6 +7,7 @@ use App\Models\Contact;
 use App\Models\Guest;
 use App\Support\AuditLogger;
 use App\Support\ContactNormalizer;
+use App\Support\PageSize;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -59,7 +60,7 @@ class ContactController extends Controller
         $contacts = $query
             ->orderBy('name')
             ->orderBy('id')
-            ->paginate(20);
+            ->paginate(PageSize::resolve($request));
 
         $contacts->through(fn (Contact $contact) => $this->contactPayload($contact));
 
@@ -85,7 +86,7 @@ class ContactController extends Controller
             ->whereHas('event', fn ($q) => $q->where('user_id', $contact->user_id))
             ->with('event:id,title,event_start')
             ->orderBy('id')
-            ->paginate(20);
+            ->paginate(PageSize::resolve($request));
 
         $guests->through(fn (Guest $guest) => [
             'id' => $guest->id,

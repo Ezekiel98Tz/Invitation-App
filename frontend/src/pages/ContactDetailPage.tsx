@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, apiErrorMessage, validationErrors } from '../lib/api';
 import type { Contact, ContactGuest, ContactGuestPage } from '../lib/types';
+import { useRequestGuard } from '../lib/useRequestGuard';
 import { Alert, Field, LoadingBlock, StatusBadge } from '../components/ui';
 import { Modal } from '../components/Modal';
 import { ConfirmDialog } from '../components/ConfirmDialog';
@@ -55,33 +56,43 @@ export function ContactDetailPage() {
         window.setTimeout(() => setToast(null), 3500);
     };
 
+    const beginContactRequest = useRequestGuard();
+    const beginGuestsRequest = useRequestGuard();
+
     const loadContact = useCallback(async () => {
+        const { signal, isCurrent } = beginContactRequest();
         setLoading(true);
         setError(null);
         try {
-            const { data } = await api.get<Contact>(`/api/v1/contacts/${contactId}`);
+            const { data } = await api.get<Contact>(`/api/v1/contacts/${contactId}`, { signal });
+            if (!isCurrent()) return;
             setContact(data);
         } catch (err) {
+            if (signal.aborted || !isCurrent()) return;
             setError(apiErrorMessage(err));
         } finally {
-            setLoading(false);
+            if (isCurrent()) setLoading(false);
         }
-    }, [contactId]);
+    }, [beginContactRequest, contactId]);
 
     const loadGuests = useCallback(async (page = 1) => {
+        const { signal, isCurrent } = beginGuestsRequest();
         setGuestsLoading(true);
         try {
             const { data } = await api.get<ContactGuestPage>(`/api/v1/contacts/${contactId}/guests`, {
                 params: { page },
+                signal,
             });
+            if (!isCurrent()) return;
             setGuests(data.data);
             setGuestPage(data);
         } catch (err) {
+            if (signal.aborted || !isCurrent()) return;
             setError(apiErrorMessage(err));
         } finally {
-            setGuestsLoading(false);
+            if (isCurrent()) setGuestsLoading(false);
         }
-    }, [contactId]);
+    }, [beginGuestsRequest, contactId]);
 
     useEffect(() => {
         void loadContact();
@@ -241,7 +252,7 @@ export function ContactDetailPage() {
                                 type="button"
                                 className="btn btn-sm btn-ghost"
                                 disabled={!guestPage.prev_page_url}
-                                onClick={() => loadGuests(guestPage.current_page - 1)}
+                                onClick={() => void loadGuests(guestPage.current_page - 1)}
                             >
                                 Previous
                             </button>
@@ -249,7 +260,7 @@ export function ContactDetailPage() {
                                 type="button"
                                 className="btn btn-sm btn-ghost"
                                 disabled={!guestPage.next_page_url}
-                                onClick={() => loadGuests(guestPage.current_page + 1)}
+                                onClick={() => void loadGuests(guestPage.current_page + 1)}
                             >
                                 Next
                             </button>

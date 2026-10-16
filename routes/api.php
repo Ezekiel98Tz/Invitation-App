@@ -45,8 +45,10 @@ Route::prefix('api/v1')->group(function () {
         Route::get('me', [AuthController::class, 'me'])->name('api.me');
         Route::post('auth/logout', [AuthController::class, 'logout'])->name('api.auth.logout');
 
-        Route::get('events', [EventController::class, 'index'])->name('api.events.index');
-        Route::get('events/{event}', [EventController::class, 'show'])->name('api.events.show');
+        Route::middleware('throttle:admin-read')->group(function () {
+            Route::get('events', [EventController::class, 'index'])->name('api.events.index');
+            Route::get('events/{event}', [EventController::class, 'show'])->name('api.events.show');
+        });
 
         Route::middleware('throttle:admin-write')->group(function () {
             Route::post('events', [EventController::class, 'store'])->name('api.events.store');
@@ -56,10 +58,14 @@ Route::prefix('api/v1')->group(function () {
             Route::post('events/{event}/duplicate', [EventController::class, 'duplicate'])->name('api.events.duplicate');
         });
 
-        Route::get('events/{event}/invitation', [InvitationDesignController::class, 'show'])->name('api.events.invitation.show');
+        Route::middleware('throttle:admin-read')->group(function () {
+            Route::get('events/{event}/invitation', [InvitationDesignController::class, 'show'])->name('api.events.invitation.show');
+        });
         Route::put('events/{event}/invitation', [InvitationDesignController::class, 'update'])->name('api.events.invitation.update');
 
-        Route::get('events/{event}/guests', [GuestController::class, 'index'])->name('api.events.guests.index');
+        Route::middleware('throttle:admin-read')->group(function () {
+            Route::get('events/{event}/guests', [GuestController::class, 'index'])->name('api.events.guests.index');
+        });
 
         Route::middleware('throttle:admin-write')->group(function () {
             Route::post('events/{event}/guests', [GuestController::class, 'store'])->name('api.events.guests.store');
@@ -67,9 +73,8 @@ Route::prefix('api/v1')->group(function () {
             Route::delete('events/{event}/guests/{guest}', [GuestController::class, 'destroy'])->name('api.events.guests.destroy');
         });
 
-        Route::get('events/{event}/imports/latest', [GuestController::class, 'importStatus'])->name('api.events.imports.latest');
-
         Route::middleware('throttle:admin-read')->group(function () {
+            Route::get('events/{event}/imports/latest', [GuestController::class, 'importStatus'])->name('api.events.imports.latest');
             Route::get('events/{event}/guests/{guest}/verification', [GuestController::class, 'verification'])->name('api.events.guests.verification');
         });
 
@@ -119,21 +124,26 @@ Route::prefix('api/v1')->group(function () {
             Route::post('events/{event}/deliveries/retry-failed', [InvitationController::class, 'retryFailed'])->name('api.events.deliveries.retryFailed');
         });
 
-        Route::get('events/{event}/invitations/preview', [InvitationController::class, 'preview'])->name('api.events.invitations.preview');
-        Route::get('events/{event}/deliveries', [InvitationController::class, 'deliveries'])->name('api.events.deliveries');
-        Route::get('events/{event}/deliveries/failed', [InvitationController::class, 'failed'])->name('api.events.deliveries.failed');
-
-        Route::get('reports/events', [ReportController::class, 'events'])->name('api.reports.events');
+        Route::middleware('throttle:admin-read')->group(function () {
+            Route::get('events/{event}/invitations/preview', [InvitationController::class, 'preview'])->name('api.events.invitations.preview');
+            Route::get('events/{event}/deliveries', [InvitationController::class, 'deliveries'])->name('api.events.deliveries');
+            Route::get('events/{event}/deliveries/failed', [InvitationController::class, 'failed'])->name('api.events.deliveries.failed');
+            Route::get('reports/events', [ReportController::class, 'events'])->name('api.reports.events');
+        });
 
         // Delivery Lab (operator-only; sandbox/testing).
-        Route::get('delivery-lab', [DeliveryLabController::class, 'index'])->name('api.delivery-lab.index');
-        Route::get('events/{event}/guests/{guest}/delivery-lab/preview', [DeliveryLabController::class, 'preview'])->name('api.delivery-lab.preview');
+        Route::middleware('throttle:admin-read')->group(function () {
+            Route::get('delivery-lab', [DeliveryLabController::class, 'index'])->name('api.delivery-lab.index');
+            Route::get('events/{event}/guests/{guest}/delivery-lab/preview', [DeliveryLabController::class, 'preview'])->name('api.delivery-lab.preview');
+        });
         Route::middleware('throttle:admin-send')->group(function () {
             Route::post('events/{event}/guests/{guest}/delivery-lab/test-send', [DeliveryLabController::class, 'testSend'])->name('api.delivery-lab.test-send');
         });
 
-        Route::get('celebrations', [CelebrationController::class, 'index'])->name('api.celebrations.index');
-        Route::get('celebrations/{celebration}', [CelebrationController::class, 'show'])->name('api.celebrations.show');
+        Route::middleware('throttle:admin-read')->group(function () {
+            Route::get('celebrations', [CelebrationController::class, 'index'])->name('api.celebrations.index');
+            Route::get('celebrations/{celebration}', [CelebrationController::class, 'show'])->name('api.celebrations.show');
+        });
 
         Route::middleware('throttle:admin-write')->group(function () {
             Route::post('celebrations', [CelebrationController::class, 'store'])->name('api.celebrations.store');
@@ -145,9 +155,11 @@ Route::prefix('api/v1')->group(function () {
             Route::delete('celebrations/{celebration}/events/{event}', [CelebrationController::class, 'detachEvent'])->name('api.celebrations.events.detach');
         });
 
-        Route::get('contacts', [ContactController::class, 'index'])->name('api.contacts.index');
-        Route::get('contacts/{contact}', [ContactController::class, 'show'])->name('api.contacts.show');
-        Route::get('contacts/{contact}/guests', [ContactController::class, 'guests'])->name('api.contacts.guests');
+        Route::middleware('throttle:admin-read')->group(function () {
+            Route::get('contacts', [ContactController::class, 'index'])->name('api.contacts.index');
+            Route::get('contacts/{contact}', [ContactController::class, 'show'])->name('api.contacts.show');
+            Route::get('contacts/{contact}/guests', [ContactController::class, 'guests'])->name('api.contacts.guests');
+        });
 
         Route::middleware('throttle:admin-write')->group(function () {
             Route::put('contacts/{contact}', [ContactController::class, 'update'])->name('api.contacts.update');
@@ -181,8 +193,10 @@ Route::prefix('api/v1')->group(function () {
             Route::get('events/{event}/pledges/import/{batch}', [PledgeImportController::class, 'show'])->name('api.events.pledges.import.show');
         });
 
-        Route::get('events/{event}/pledges', [PledgeController::class, 'index'])->name('api.events.pledges.index')->middleware(EnsureEventCapability::class.':contributions');
-        Route::get('events/{event}/pledges/{pledge}', [PledgeController::class, 'show'])->name('api.events.pledges.show')->middleware(EnsureEventCapability::class.':contributions');
+        Route::middleware(['throttle:admin-read', EnsureEventCapability::class.':contributions'])->group(function () {
+            Route::get('events/{event}/pledges', [PledgeController::class, 'index'])->name('api.events.pledges.index');
+            Route::get('events/{event}/pledges/{pledge}', [PledgeController::class, 'show'])->name('api.events.pledges.show');
+        });
 
         Route::middleware(['throttle:admin-write', EnsureEventCapability::class.':contributions'])->group(function () {
             Route::post('events/{event}/pledges', [PledgeController::class, 'store'])->name('api.events.pledges.store');

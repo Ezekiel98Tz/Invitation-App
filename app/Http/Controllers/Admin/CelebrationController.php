@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Celebration;
 use App\Models\Event;
 use App\Support\AuditLogger;
+use App\Support\PageSize;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -30,7 +31,7 @@ class CelebrationController extends Controller
             ->where('user_id', $ownerId)
             ->withCount('events')
             ->orderByDesc('id')
-            ->paginate(15);
+            ->paginate(PageSize::resolve($request));
 
         return response()->json($celebrations);
     }
@@ -61,11 +62,20 @@ class CelebrationController extends Controller
 
         $events = $celebration->events()
             ->orderBy('event_start')
-            ->get();
+            ->orderBy('id')
+            ->paginate(PageSize::resolve($request));
 
         return response()->json([
             'celebration' => $celebration->only(['id', 'name', 'description', 'created_at', 'updated_at']),
-            'events' => $events,
+            'events' => $events->items(),
+            'events_meta' => [
+                'current_page' => $events->currentPage(),
+                'last_page' => $events->lastPage(),
+                'per_page' => $events->perPage(),
+                'total' => $events->total(),
+                'prev_page_url' => $events->previousPageUrl(),
+                'next_page_url' => $events->nextPageUrl(),
+            ],
         ]);
     }
 

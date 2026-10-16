@@ -8,6 +8,7 @@ use App\Models\Pledge;
 use App\Models\PledgeImportBatch;
 use App\Services\PledgeImporter;
 use App\Support\AuditLogger;
+use App\Support\PageSize;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
@@ -119,6 +120,18 @@ class PledgeImportController extends Controller
 
         $mapping = $this->importer->suggestMapping($columns);
 
+        // Reject over-limit workbooks before creating a batch or doing any
+        // further work. Counting streams the file and stops early once the
+        // configured maximum is exceeded.
+        $maxRows = $this->maxImportRows();
+        $rowCount = $this->importer->countDataRows(Storage::path($temporaryPath), $mapping, $maxRows);
+
+        if ($rowCount > $maxRows) {
+            Storage::delete($temporaryPath);
+
+            throw ValidationException::withMessages(['file' => [$this->rowLimitMessage($maxRows)]]);
+        }
+
         $batch = PledgeImportBatch::create([
             'user_id' => $event->user_id,
             'event_id' => $event->id,
@@ -139,24 +152,12 @@ class PledgeImportController extends Controller
             Storage::delete($temporaryPath);
         }
 
+        // A small, read-only sample of the actual extracted cells, streamed
+        // rather than materialising the whole workbook. Nothing is stored.
         try {
-            $rows = $this->importer->readRows(Storage::path($storedPath));
+            $sample = $this->importer->sampleRows(Storage::path($storedPath), $mapping, 3);
         } catch (Throwable) {
-            $rows = [];
-        }
-
-        // A small, read-only sample of the actual extracted cells so the operator
-        // can confirm recognition before previewing. Nothing is stored.
-        $sample = [];
-        foreach (array_slice($rows, 0, 3) as $index => $row) {
-            if (! is_array($row)) {
-                continue;
-            }
-
-            $sample[] = [
-                'row' => $index + 1,
-                'values' => $this->importer->sampleRow($row, $mapping),
-            ];
+            $sample = [];
         }
 
         AuditLogger::log($request, 'pledge_import.upload', $batch, [
@@ -168,7 +169,8 @@ class PledgeImportController extends Controller
             'batch' => $this->batchPayload($batch->fresh()),
             'columns' => $columns,
             'mapping' => $mapping,
-            'row_count' => count($rows),
+            'row_count' => $rowCount,
+            'max_rows' => $maxRows,
             'recognition' => $this->importer->recognition($columns),
             'sample' => $sample,
         ], 201);
@@ -207,9 +209,14 @@ class PledgeImportController extends Controller
 
         $this->assertRequiredHeadersResolved($mapping);
 
+        // Enforce the row limit before materialising rows, so an over-limit
+        // batch (e.g. after the configured limit was lowered) is rejected cheaply.
+        $sourcePath = $this->requireSourcePath($batch);
+        $this->assertWithinRowLimit($sourcePath, $mapping);
+
         $result = $this->importer->preview(
             $event,
-            $this->readSourceRows($batch),
+            $this->importer->readRows($sourcePath),
             $mapping,
             (array) ($data['decisions'] ?? []),
             $mode,
@@ -229,12 +236,40 @@ class PledgeImportController extends Controller
             'counts' => $result['counts'],
         ]);
 
+        // The whole file is validated (so counts stay exact), but only one
+        // bounded page of row objects is returned.
+        $perPage = PageSize::resolve(
+            $request,
+            max(1, (int) config('invitations.pledge_import_preview_page_size', 50)),
+            max(1, (int) config('invitations.pledge_import_preview_max_page_size', 200)),
+        );
+
+        $pageRows = array_values($result['rows']);
+        $totalRows = count($pageRows);
+        $lastPage = max(1, (int) ceil($totalRows / $perPage));
+        $page = min(max(1, (int) $request->input('page', 1)), $lastPage);
+        $slice = array_slice($pageRows, ($page - 1) * $perPage, $perPage);
+
+        // Ambiguous data-row numbers across the WHOLE file, so the UI can require
+        // a decision for every one of them regardless of the previewed page.
+        $ambiguousRows = array_values(array_map(
+            static fn (array $row): int => (int) $row['row'],
+            array_filter($pageRows, static fn (array $row): bool => ($row['action'] ?? null) === 'ambiguous'),
+        ));
+
         return response()->json([
             'batch' => $this->batchPayload($batch->fresh()),
             'mapping' => $mapping,
             'mode' => $mode,
             'counts' => $result['counts'],
-            'rows' => array_map(fn (array $row) => $this->rowPayload($row), $result['rows']),
+            'rows' => array_map(fn (array $row) => $this->rowPayload($row), $slice),
+            'ambiguous_rows' => $ambiguousRows,
+            'preview' => [
+                'page' => $page,
+                'per_page' => $perPage,
+                'last_page' => $lastPage,
+                'total_rows' => $totalRows,
+            ],
         ]);
     }
 
@@ -259,11 +294,14 @@ class PledgeImportController extends Controller
 
         $this->assertRequiredHeadersResolved($mapping);
 
+        $sourcePath = $this->requireSourcePath($batch);
+        $this->assertWithinRowLimit($sourcePath, $mapping);
+
         $result = $this->importer->confirm(
             $request,
             $event,
             $batch,
-            $this->readSourceRows($batch),
+            $this->importer->readRows($sourcePath),
             $mapping,
             (array) ($data['decisions'] ?? []),
             $mode,
@@ -301,36 +339,43 @@ class PledgeImportController extends Controller
             return response()->json(['message' => 'XLSX export requires the PHP zip extension.'], 503);
         }
 
+        $sourcePath = $this->requireSourcePath($batch);
+        $mapping = $this->resolveMapping($batch, null);
+        $this->assertWithinRowLimit($sourcePath, $mapping);
+
         $result = $this->importer->preview(
             $event,
-            $this->readSourceRows($batch),
-            $this->resolveMapping($batch, null),
+            $this->importer->readRows($sourcePath),
+            $mapping,
             [],
             PledgeImporter::MODE_CREATE_ONLY,
             null,
         );
 
-        $problemRows = array_values(array_filter(
-            $result['rows'],
-            static fn (array $row) => in_array($row['action'], ['failed', 'ambiguous'], true),
-        ));
-
         Storage::makeDirectory(self::EXPORT_DIRECTORY);
         $exportPath = self::EXPORT_DIRECTORY.'/pledge-import-errors-'.$batch->id.'-'.Str::uuid().'.'.$format;
         $fullPath = Storage::path($exportPath);
 
+        // Stream the report: problem rows are written as they are iterated rather
+        // than accumulating a second full copy of every row in memory.
         $writer = SimpleExcelWriter::create($fullPath);
         $writer->addHeader(self::ERROR_REPORT_COLUMNS);
 
-        foreach ($problemRows as $row) {
+        $problemCount = 0;
+        foreach ($result['rows'] as $row) {
+            if (! in_array($row['action'], ['failed', 'ambiguous'], true)) {
+                continue;
+            }
+
             $writer->addRow($this->errorReportRow($row));
+            $problemCount++;
         }
 
         $writer->close();
 
         AuditLogger::log($request, 'pledge_import.errors', $batch, [
             'event_id' => $event->id,
-            'rows' => count($problemRows),
+            'rows' => $problemCount,
         ]);
 
         return response()->download($fullPath)->deleteFileAfterSend(true);
@@ -426,11 +471,10 @@ class PledgeImportController extends Controller
     }
 
     /**
-     * Resolve the stored source file for a batch, or abort with a clear message.
-     *
-     * @return list<array<string, mixed>>
+     * Resolve the absolute path of a batch's stored source file, or abort with a
+     * clear, actionable message when it is gone.
      */
-    private function readSourceRows(PledgeImportBatch $batch): array
+    private function requireSourcePath(PledgeImportBatch $batch): string
     {
         $storedPath = $this->sourcePath($batch);
 
@@ -440,7 +484,43 @@ class PledgeImportController extends Controller
             ]);
         }
 
-        return $this->importer->readRows(Storage::path($storedPath));
+        return Storage::path($storedPath);
+    }
+
+    /**
+     * The configured maximum number of data rows per workbook.
+     */
+    private function maxImportRows(): int
+    {
+        return max(1, (int) config('invitations.max_pledge_import_rows', 2000));
+    }
+
+    private function rowLimitMessage(int $limit): string
+    {
+        return "This file has more than {$limit} data rows. The maximum for one pledge import is {$limit} rows; "
+            .'split the file into smaller files and import each separately — re-importing is safe and never '
+            .'duplicates pledges.';
+    }
+
+    /**
+     * File-level guard: reject a workbook whose data-row count exceeds the
+     * configured maximum. Enforced at preview, confirm and error-report time in
+     * addition to upload, so a client cannot bypass the limit by calling a
+     * different endpoint or replaying a confirmation.
+     *
+     * Counting streams the file and stops early once the limit is exceeded.
+     *
+     * @param  array<string, string>  $mapping
+     *
+     * @throws ValidationException
+     */
+    private function assertWithinRowLimit(string $fullPath, array $mapping): void
+    {
+        $limit = $this->maxImportRows();
+
+        if ($this->importer->countDataRows($fullPath, $mapping, $limit) > $limit) {
+            throw ValidationException::withMessages(['file' => [$this->rowLimitMessage($limit)]]);
+        }
     }
 
     private function sourcePath(PledgeImportBatch $batch): ?string

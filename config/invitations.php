@@ -11,6 +11,20 @@ return [
     // specify one. Kept configurable; never assume a single currency.
     'pledge_default_currency' => env('INVITATIONS_PLEDGE_DEFAULT_CURRENCY', 'USD'),
 
+    // Maximum number of DATA rows (header excluded; blank rows ignored) accepted
+    // in a single pledge-import workbook. The importer holds the rows in memory
+    // and confirms them in one transaction, so this bounds both. The default is
+    // deliberately conservative: far above realistic client pledge sheets (the
+    // reference workbook has ~10 rows) while keeping one confirmation
+    // transaction bounded. The 5 MB file-size cap is a separate limit.
+    'max_pledge_import_rows' => (int) env('INVITATIONS_MAX_PLEDGE_IMPORT_ROWS', 2000),
+
+    // Bounded preview pagination. The preview validates the whole file but only
+    // returns one page of row objects, so a large (but within-limit) workbook
+    // cannot produce an unbounded JSON payload.
+    'pledge_import_preview_page_size' => (int) env('INVITATIONS_PLEDGE_IMPORT_PREVIEW_PAGE_SIZE', 50),
+    'pledge_import_preview_max_page_size' => (int) env('INVITATIONS_PLEDGE_IMPORT_PREVIEW_MAX_PAGE_SIZE', 200),
+
     // Entry-credential validity window, relative to event start. Independent of
     // the RSVP link expiry in InvitationAccess.
     'credential_valid_before_hours' => (int) env('INVITATION_CREDENTIAL_VALID_BEFORE_HOURS', 6),

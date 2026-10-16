@@ -13,6 +13,7 @@ use App\Services\ContactResolver;
 use App\Support\AuditLogger;
 use App\Support\ContactNormalizer;
 use App\Support\GuestDedup;
+use App\Support\PageSize;
 use App\Support\InvitationAccess;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -66,7 +67,7 @@ class GuestController extends Controller
         ];
 
         return response()->json(array_merge(
-            $query->paginate(20)->toArray(),
+            $query->paginate(PageSize::resolve($request))->toArray(),
             ['counts' => $counts]
         ));
     }

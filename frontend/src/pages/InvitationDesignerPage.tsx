@@ -4,6 +4,7 @@ import { api, apiErrorMessage, validationErrors } from '../lib/api';
 import type { Design, InvitationDesignResponse, TemplateDefinition } from '../lib/types';
 import { Alert, Field, LoadingBlock } from '../components/ui';
 import { TemplatePreview } from '../components/TemplatePreview';
+import { useRequestGuard } from '../lib/useRequestGuard';
 
 export function InvitationDesignerPage() {
     const { id } = useParams<{ id: string }>();
@@ -16,19 +17,26 @@ export function InvitationDesignerPage() {
     const [errors, setErrors] = useState<Record<string, string[]>>({});
     const [toast, setToast] = useState<string | null>(null);
 
+    const beginRequest = useRequestGuard();
+
     const load = useCallback(async () => {
+        const { signal, isCurrent } = beginRequest();
         setLoading(true);
         setError(null);
         try {
-            const { data } = await api.get<InvitationDesignResponse>(`/api/v1/events/${eventId}/invitation`);
+            const { data } = await api.get<InvitationDesignResponse>(`/api/v1/events/${eventId}/invitation`, {
+                signal,
+            });
+            if (!isCurrent()) return;
             setData(data);
             setDesign(data.design);
         } catch (err) {
+            if (signal.aborted || !isCurrent()) return;
             setError(apiErrorMessage(err));
         } finally {
-            setLoading(false);
+            if (isCurrent()) setLoading(false);
         }
-    }, [eventId]);
+    }, [beginRequest, eventId]);
 
     useEffect(() => {
         void load();

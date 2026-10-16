@@ -10,6 +10,7 @@ use App\Models\Guest;
 use App\Models\InvitationDelivery;
 use App\Notifications\InvitationNotification;
 use App\Support\AuditLogger;
+use App\Support\PageSize;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
@@ -71,7 +72,7 @@ class InvitationController extends Controller
         $deliveries = $event->guests()
             ->with(['deliveries' => fn ($q) => $q->orderByDesc('id')])
             ->orderBy('id')
-            ->paginate(20);
+            ->paginate(PageSize::resolve($request));
 
         return response()->json($deliveries);
     }
@@ -102,7 +103,7 @@ class InvitationController extends Controller
             ->where('status', 'failed')
             ->whereHas('guest', fn ($q) => $q->where('event_id', $event->id))
             ->orderByDesc('id')
-            ->paginate(50);
+            ->paginate(PageSize::resolve($request));
 
         return response()->json($failed);
     }

@@ -6,6 +6,7 @@ import { Alert, Field, LoadingBlock } from '../components/ui';
 import { Modal } from '../components/Modal';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { ActionMenu } from '../components/ActionMenu';
+import { useRequestGuard } from '../lib/useRequestGuard';
 
 interface CelebrationForm {
     id: number | null;
@@ -35,19 +36,27 @@ export function CelebrationsPage() {
         window.setTimeout(() => setToast(null), 3500);
     };
 
+    const beginLoad = useRequestGuard();
+
     const load = useCallback(async (page = 1) => {
+        const { signal, isCurrent } = beginLoad();
         setLoading(true);
         setError(null);
         try {
-            const { data } = await api.get<Paginated<Celebration>>('/api/v1/celebrations', { params: { page } });
+            const { data } = await api.get<Paginated<Celebration>>('/api/v1/celebrations', {
+                params: { page },
+                signal,
+            });
+            if (!isCurrent()) return;
             setCelebrations(data.data);
             setPagination(data);
         } catch (err) {
+            if (signal.aborted || !isCurrent()) return;
             setError(apiErrorMessage(err));
         } finally {
-            setLoading(false);
+            if (isCurrent()) setLoading(false);
         }
-    }, []);
+    }, [beginLoad]);
 
     useEffect(() => {
         void load(1);

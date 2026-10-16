@@ -137,11 +137,16 @@ export function PledgesImportPage() {
     const [mapping, setMapping] = useState<PledgeImportMapping>({});
     const [recognition, setRecognition] = useState<PledgeImportRecognition | null>(null);
     const [rowCount, setRowCount] = useState<number | null>(null);
+    const [maxRows, setMaxRows] = useState<number | null>(null);
     const [sample, setSample] = useState<PledgeImportSampleRow[]>([]);
     const fileInputRef = useRef<HTMLInputElement>(null);
     // Monotonic sequence so an out-of-order preview reply can never overwrite a
     // newer one (the file or mapping may have changed while a request was open).
     const previewSeqRef = useRef(0);
+    // Signature of the mapping/mode/currency that produced the current preview.
+    // Paging within the SAME configuration keeps operator decisions; changing the
+    // configuration resets them (row numbers may shift).
+    const previewSignatureRef = useRef<string | null>(null);
 
     // Mapping / preview.
     const [mode, setMode] = useState<PledgeImportMode>('create_only');
@@ -210,6 +215,7 @@ export function PledgesImportPage() {
     const resetForNewBatch = useCallback(() => {
         // Invalidate any preview request that is still in flight.
         previewSeqRef.current += 1;
+        previewSignatureRef.current = null;
         setPreview(null);
         setPreviewSignature(null);
         setPreviewError(null);
@@ -229,6 +235,7 @@ export function PledgesImportPage() {
         setMapping({});
         setRecognition(null);
         setRowCount(null);
+        setMaxRows(null);
         setSample([]);
         setMode('create_only');
         setError(null);
@@ -299,6 +306,7 @@ export function PledgesImportPage() {
             setMapping(data.mapping ?? {});
             setRecognition(data.recognition ?? null);
             setRowCount(typeof data.row_count === 'number' ? data.row_count : null);
+            setMaxRows(typeof data.max_rows === 'number' ? data.max_rows : null);
             setSample(data.sample ?? []);
             resetForNewBatch();
 
@@ -338,11 +346,15 @@ export function PledgesImportPage() {
     };
 
     const runPreview = useCallback(
-        async (batchId?: number, mappingOverride?: PledgeImportMapping) => {
+        async (batchId?: number, mappingOverride?: PledgeImportMapping, page = 1) => {
             const targetId = batchId ?? batch?.id;
             if (targetId === undefined || targetId === null) return;
 
             const outgoingMapping = mappingOverride ?? mapping;
+            const signature = signatureOf(outgoingMapping, mode, normalizedCurrency);
+            // Decisions are keyed by data-row number: keep them when paging within
+            // the same configuration, reset them when the configuration changes.
+            const sameConfiguration = previewSignatureRef.current === signature;
             const seq = ++previewSeqRef.current;
 
             setPreviewing(true);
@@ -353,7 +365,7 @@ export function PledgesImportPage() {
                 const currency = normalizedCurrency === '' ? null : normalizedCurrency;
                 const { data } = await api.post<PledgeImportPreviewResponse>(
                     `/api/v1/events/${eventId}/pledges/import/${targetId}/preview`,
-                    { mapping: outgoingMapping, mode, default_currency: currency },
+                    { mapping: outgoingMapping, mode, default_currency: currency, page },
                 );
 
                 // A newer request has superseded this one: drop the reply so an
@@ -361,9 +373,12 @@ export function PledgesImportPage() {
                 if (seq !== previewSeqRef.current) return;
 
                 setPreview(data);
-                setPreviewSignature(signatureOf(outgoingMapping, mode, normalizedCurrency));
-                setChoices({});
-                setUpdateIds({});
+                setPreviewSignature(signature);
+                previewSignatureRef.current = signature;
+                if (!sameConfiguration) {
+                    setChoices({});
+                    setUpdateIds({});
+                }
                 setResult(null);
                 setConfirmError(null);
                 setNotice(null);
@@ -373,10 +388,12 @@ export function PledgesImportPage() {
                 const fieldErrors = validationErrors(err);
                 const fileMessage = fieldErrors.file?.[0];
 
-                // A file-level error (e.g. a missing required column) is not a
-                // per-row problem: clear the rows and show the message alone.
+                // A file-level error (e.g. a missing required column, or a file
+                // over the configured row limit) is not a per-row problem: clear
+                // the rows and show the message alone.
                 setPreview(null);
                 setPreviewSignature(null);
+                previewSignatureRef.current = null;
                 setPreviewError(fileMessage ?? apiErrorMessage(err));
             } finally {
                 if (seq === previewSeqRef.current) {
@@ -414,19 +431,19 @@ export function PledgesImportPage() {
         if (!preview) return;
         setChoices((prev) => {
             const next = { ...prev };
-            preview.rows
-                .filter((row) => row.action === 'ambiguous')
-                .forEach((row) => {
-                    next[String(row.row)] = 'skip';
-                });
+            preview.ambiguous_rows.forEach((rowNumber) => {
+                next[String(rowNumber)] = 'skip';
+            });
             return next;
         });
     };
 
-    const ambiguousRows = preview?.rows.filter((row) => row.action === 'ambiguous') ?? [];
+    // Ambiguous data-row numbers across the WHOLE file (not just the previewed
+    // page), so confirmation cannot be enabled while any remain unresolved.
+    const ambiguousRowNumbers = preview?.ambiguous_rows ?? [];
 
-    const unresolvedAmbiguous = ambiguousRows.filter((row) => {
-        const key = String(row.row);
+    const unresolvedAmbiguous = ambiguousRowNumbers.filter((rowNumber) => {
+        const key = String(rowNumber);
         const action = choices[key];
         if (action === 'create' || action === 'skip') return false;
         if (action === 'update') return !/^\d+$/.test((updateIds[key] ?? '').trim());
@@ -667,8 +684,9 @@ export function PledgesImportPage() {
                                     <p className="muted section-sub">
                                         Batch #{batch.id} · {batch.original_filename} ·{' '}
                                         {rowCount === null ? 'row count unavailable' : `${rowCount} data row(s)`} ·{' '}
-                                        {columns.length} column(s). Columns are recognised automatically — you do not need
-                                        to map them.
+                                        {columns.length} column(s).
+                                        {maxRows !== null ? ` Maximum ${maxRows} data rows per file.` : ''} Columns are
+                                        recognised automatically — you do not need to map them.
                                     </p>
                                 </div>
                             </div>
@@ -904,6 +922,21 @@ export function PledgesImportPage() {
 
                             <PreviewCounts counts={preview.counts} />
 
+                            {preview.preview ? (
+                                <p className="muted small" style={{ marginTop: '0.5rem' }}>
+                                    Showing rows{' '}
+                                    {preview.rows.length === 0
+                                        ? 0
+                                        : (preview.preview.page - 1) * preview.preview.per_page + 1}
+                                    –
+                                    {(preview.preview.page - 1) * preview.preview.per_page + preview.rows.length} of{' '}
+                                    {preview.preview.total_rows} data row(s).{' '}
+                                    {preview.preview.total_rows > preview.preview.per_page
+                                        ? 'All rows are validated; only this page is displayed.'
+                                        : ''}
+                                </p>
+                            ) : null}
+
                             {!previewFresh ? (
                                 <div style={{ marginTop: '0.75rem' }}>
                                     <Alert kind="error">
@@ -944,6 +977,36 @@ export function PledgesImportPage() {
                                     />
                                 ))}
                             </div>
+
+                            {preview.preview && preview.preview.last_page > 1 ? (
+                                <div
+                                    className="row between pagination"
+                                    style={{ marginTop: '0.75rem' }}
+                                    aria-label="Preview pagination"
+                                >
+                                    <span className="muted small">
+                                        Page {preview.preview.page} of {preview.preview.last_page}
+                                    </span>
+                                    <div className="row">
+                                        <button
+                                            type="button"
+                                            className="btn btn-sm btn-ghost"
+                                            disabled={previewing || preview.preview.page <= 1}
+                                            onClick={() => void runPreview(batch?.id, mapping, preview.preview.page - 1)}
+                                        >
+                                            Previous
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="btn btn-sm btn-ghost"
+                                            disabled={previewing || preview.preview.page >= preview.preview.last_page}
+                                            onClick={() => void runPreview(batch?.id, mapping, preview.preview.page + 1)}
+                                        >
+                                            Next
+                                        </button>
+                                    </div>
+                                </div>
+                            ) : null}
                         </section>
                     ) : null}
 

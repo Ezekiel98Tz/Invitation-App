@@ -12,9 +12,12 @@ import { Alert, LoadingBlock, StatusBadge } from './ui';
 import { ActionMenu } from './ActionMenu';
 import { Modal } from './Modal';
 import { ConfirmDialog } from './ConfirmDialog';
+import { useRequestGuard } from '../lib/useRequestGuard';
 
 const ALLOWED_EXTENSIONS = ['csv', 'xlsx', 'ods'];
 const IMPORT_MAX_MB = 5;
+const DEFAULT_PAGE_SIZE = 20;
+const PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
 
 interface Props {
     eventId: string;
@@ -68,6 +71,7 @@ export function GuestsPanel({ eventId, eventTitle, checkInEnabled }: Props) {
     const [status, setStatus] = useState('');
     const [appliedSearch, setAppliedSearch] = useState('');
     const [appliedStatus, setAppliedStatus] = useState('');
+    const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
 
     const [exporting, setExporting] = useState(false);
     const [remindingId, setRemindingId] = useState<number | null>(null);
@@ -98,27 +102,36 @@ export function GuestsPanel({ eventId, eventTitle, checkInEnabled }: Props) {
         window.setTimeout(() => setToast(null), 3500);
     }, []);
 
+    const beginRequest = useRequestGuard();
+
     const fetchGuests = useCallback(
-        async (page: number, s: string, st: string) => {
+        async (page: number, s: string, st: string, size: number) => {
+            const { signal, isCurrent } = beginRequest();
             setLoading(true);
             setError(null);
             try {
                 const { data } = await api.get<GuestPage>(`/api/v1/events/${eventId}/guests`, {
-                    params: { page, search: s, status: st },
+                    params: { page, search: s, status: st, per_page: size },
+                    signal,
                 });
+                // Ignore a response a newer request has superseded.
+                if (!isCurrent()) return;
                 setGuests(data.data);
                 setPagination(data);
             } catch (err) {
+                // A cancelled request is expected when the user pages/searches
+                // quickly; never surface it as an error.
+                if (signal.aborted || !isCurrent()) return;
                 setError(apiErrorMessage(err));
             } finally {
-                setLoading(false);
+                if (isCurrent()) setLoading(false);
             }
         },
-        [eventId],
+        [beginRequest, eventId],
     );
 
     useEffect(() => {
-        void fetchGuests(1, '', '');
+        void fetchGuests(1, '', '', DEFAULT_PAGE_SIZE);
     }, [fetchGuests]);
 
     const counts = pagination?.counts;
@@ -126,12 +139,12 @@ export function GuestsPanel({ eventId, eventTitle, checkInEnabled }: Props) {
     const hasFilters = appliedSearch !== '' || appliedStatus !== '';
     const currentPage = pagination?.current_page ?? 1;
 
-    const refresh = () => fetchGuests(currentPage, appliedSearch, appliedStatus);
+    const refresh = () => fetchGuests(currentPage, appliedSearch, appliedStatus, pageSize);
 
     const applyFilters = () => {
         setAppliedSearch(search);
         setAppliedStatus(status);
-        void fetchGuests(1, search, status);
+        void fetchGuests(1, search, status, pageSize);
     };
 
     const clearFilters = () => {
@@ -139,7 +152,12 @@ export function GuestsPanel({ eventId, eventTitle, checkInEnabled }: Props) {
         setStatus('');
         setAppliedSearch('');
         setAppliedStatus('');
-        void fetchGuests(1, '', '');
+        void fetchGuests(1, '', '', pageSize);
+    };
+
+    const changePageSize = (size: number) => {
+        setPageSize(size);
+        void fetchGuests(1, appliedSearch, appliedStatus, size);
     };
 
     // ---- Guest form (add / edit) ----
@@ -351,7 +369,7 @@ export function GuestsPanel({ eventId, eventTitle, checkInEnabled }: Props) {
                 if (data.import) {
                     setImportStatus(data.import);
                     if (data.import.status === 'completed') {
-                        await fetchGuests(1, appliedSearch, appliedStatus);
+                        await fetchGuests(1, appliedSearch, appliedStatus, pageSize);
                         notify('Import completed.');
                     }
                 }
@@ -572,17 +590,42 @@ export function GuestsPanel({ eventId, eventTitle, checkInEnabled }: Props) {
                 </div>
             )}
 
-            {pagination && pagination.last_page > 1 ? (
-                <div className="row between pagination">
-                    <span className="muted">
-                        Page {pagination.current_page} of {pagination.last_page}
-                    </span>
+            {pagination && total > 0 ? (
+                <div className="row between pagination" aria-label="Guests pagination">
+                    <div className="row" style={{ gap: '0.75rem', alignItems: 'center' }}>
+                        <span className="muted">
+                            Page {pagination.current_page} of {pagination.last_page} · {total} guest
+                            {total === 1 ? '' : 's'}
+                        </span>
+                        <label
+                            className="muted small"
+                            htmlFor="guest-page-size"
+                            style={{ display: 'inline-flex', gap: '0.35rem', alignItems: 'center' }}
+                        >
+                            Rows
+                            <select
+                                id="guest-page-size"
+                                className="select"
+                                style={{ width: 'auto' }}
+                                value={pageSize}
+                                onChange={(e) => changePageSize(Number(e.target.value))}
+                            >
+                                {PAGE_SIZE_OPTIONS.map((size) => (
+                                    <option key={size} value={size}>
+                                        {size}
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
+                    </div>
                     <div className="row">
                         <button
                             type="button"
                             className="btn btn-sm btn-ghost"
                             disabled={!pagination.prev_page_url}
-                            onClick={() => fetchGuests(pagination.current_page - 1, appliedSearch, appliedStatus)}
+                            onClick={() =>
+                                void fetchGuests(pagination.current_page - 1, appliedSearch, appliedStatus, pageSize)
+                            }
                         >
                             Previous
                         </button>
@@ -590,7 +633,9 @@ export function GuestsPanel({ eventId, eventTitle, checkInEnabled }: Props) {
                             type="button"
                             className="btn btn-sm btn-ghost"
                             disabled={!pagination.next_page_url}
-                            onClick={() => fetchGuests(pagination.current_page + 1, appliedSearch, appliedStatus)}
+                            onClick={() =>
+                                void fetchGuests(pagination.current_page + 1, appliedSearch, appliedStatus, pageSize)
+                            }
                         >
                             Next
                         </button>

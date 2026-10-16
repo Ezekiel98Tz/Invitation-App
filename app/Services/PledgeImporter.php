@@ -420,6 +420,86 @@ class PledgeImporter
     }
 
     /**
+     * Count the data rows that `process()` would consider, without materialising
+     * the whole workbook. The header row is excluded by the reader and genuinely
+     * blank rows are excluded using the same `isBlankRow()` rule the importer
+     * applies when processing, so the count matches the rows that would be
+     * validated.
+     *
+     * `getRows()` is a LazyCollection, so this streams the workbook. When
+     * `$stopAfter` is supplied the read stops as soon as the count exceeds it,
+     * so an over-limit file is rejected without loading every remaining row.
+     *
+     * @param  array<string, string>  $mapping
+     */
+    public function countDataRows(string $fullPath, array $mapping, ?int $stopAfter = null): int
+    {
+        $reader = SimpleExcelReader::create($fullPath);
+        $count = 0;
+
+        try {
+            foreach ($reader->getRows() as $raw) {
+                if (! is_array($raw)) {
+                    continue;
+                }
+
+                if ($this->isBlankRow($raw, $mapping)) {
+                    continue;
+                }
+
+                $count++;
+
+                if ($stopAfter !== null && $count > $stopAfter) {
+                    break;
+                }
+            }
+        } finally {
+            $reader->close();
+        }
+
+        return $count;
+    }
+
+    /**
+     * The first `$limit` data rows projected for display, read as a stream so a
+     * workbook is never fully materialised just to show a sample. Row numbers are
+     * the raw data-row positions (matching `process()`), with blank rows skipped.
+     *
+     * @param  array<string, string>  $mapping
+     * @return list<array{row: int, values: array<string, mixed>}>
+     */
+    public function sampleRows(string $fullPath, array $mapping, int $limit = 3): array
+    {
+        $reader = SimpleExcelReader::create($fullPath);
+        $sample = [];
+        $position = 0;
+
+        try {
+            foreach ($reader->getRows() as $raw) {
+                if ($position >= $limit) {
+                    break;
+                }
+
+                if (! is_array($raw)) {
+                    continue;
+                }
+
+                $position++;
+
+                if ($this->isBlankRow($raw, $mapping)) {
+                    continue;
+                }
+
+                $sample[] = ['row' => $position, 'values' => $this->sampleRow($raw, $mapping)];
+            }
+        } finally {
+            $reader->close();
+        }
+
+        return $sample;
+    }
+
+    /**
      * Analyse rows without mutating anything. Returns the per-row proposal and
      * proposed counts. Used by the preview endpoint.
      *
@@ -1096,25 +1176,46 @@ class PledgeImporter
             return [];
         }
 
+        // Gather only the pledges whose normalized email/phone matches the row.
+        // The context is pre-indexed (see buildContext), so this is proportional
+        // to the number of candidates rather than to every pledge in the event.
+        $candidateIds = [];
+
+        if ($emailKey !== null) {
+            foreach ($context['pledges_by_email'][$emailKey] ?? [] as $id => $_) {
+                $candidateIds[$id] = true;
+            }
+        }
+
+        if ($phoneKey !== null) {
+            foreach ($context['pledges_by_phone'][$phoneKey] ?? [] as $id => $_) {
+                $candidateIds[$id] = true;
+            }
+        }
+
         $matches = [];
 
-        foreach ($context['pledges'] as $pledge) {
+        foreach (array_keys($candidateIds) as $id) {
+            $pledge = $context['pledges'][$id] ?? null;
+
+            if ($pledge === null) {
+                continue;
+            }
+
+            // Same rule as before: exact currency AND exact pledged amount.
             if ($pledge['currency'] !== $values['currency'] || $pledge['amount'] !== $values['pledged_amount_minor']) {
                 continue;
             }
 
-            $emailMatch = $emailKey !== null && $pledge['email'] !== null
-                && mb_strtolower(trim((string) $pledge['email'])) === $emailKey;
-
-            $phoneMatch = $phoneKey !== null && $pledge['phone'] !== null
-                && ContactNormalizer::phone((string) $pledge['phone']) === $phoneKey;
-
-            if ($emailMatch || $phoneMatch) {
-                $matches[$pledge['id']] = true;
-            }
+            $matches[$id] = true;
         }
 
-        return array_map('intval', array_keys($matches));
+        // Deterministic order. Only the count / single match is consumed, so this
+        // matches the previous behaviour while being stable across runs.
+        $ids = array_map('intval', array_keys($matches));
+        sort($ids);
+
+        return $ids;
     }
 
     /**
@@ -1160,6 +1261,8 @@ class PledgeImporter
 
         $pledgesByGuest = [];
         $pledgesByContact = [];
+        $pledgesByEmail = [];
+        $pledgesByPhone = [];
         $pledges = [];
         $pledgeStatus = [];
 
@@ -1177,12 +1280,21 @@ class PledgeImporter
                 $pledgesByContact[(int) $pledge->contact_id][] = $id;
             }
 
-            $pledges[] = [
-                'id' => $id,
+            // Index by normalized email/phone so fallback matching only visits the
+            // pledges that can actually match the row (see fallbackMatch()).
+            $emailKey = ContactNormalizer::email($pledge->pledger_email);
+            if ($emailKey !== null) {
+                $pledgesByEmail[$emailKey][$id] = true;
+            }
+
+            $phoneKey = ContactNormalizer::phone($pledge->pledger_phone);
+            if ($phoneKey !== null) {
+                $pledgesByPhone[$phoneKey][$id] = true;
+            }
+
+            $pledges[$id] = [
                 'currency' => (string) $pledge->currency,
                 'amount' => (int) $pledge->pledged_amount_minor,
-                'email' => $pledge->pledger_email,
-                'phone' => $pledge->pledger_phone,
             ];
             $pledgeStatus[$id] = (string) $pledge->status;
         }
@@ -1196,6 +1308,8 @@ class PledgeImporter
             'contact_ids' => $contactIds,
             'pledges_by_guest' => $pledgesByGuest,
             'pledges_by_contact' => $pledgesByContact,
+            'pledges_by_email' => $pledgesByEmail,
+            'pledges_by_phone' => $pledgesByPhone,
             'pledges' => $pledges,
             'pledge_status' => $pledgeStatus,
         ];

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\Event;
 use App\Support\AuditLogger;
+use App\Support\PageSize;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
@@ -27,27 +28,34 @@ class ReportController extends Controller
                 'guests as guests_responded' => fn ($q) => $q->whereIn('status', ['accepted', 'declined']),
             ])
             ->orderByDesc('event_start')
-            ->get()
-            ->map(function (Event $event) {
-                $total = (int) $event->guests_total;
-                $responded = (int) $event->guests_responded;
-                $rate = $total === 0 ? 0.0 : round(($responded / $total) * 100, 2);
+            ->orderByDesc('id')
+            ->paginate(PageSize::resolve($request));
 
-                return [
-                    'id' => $event->id,
-                    'title' => $event->title,
-                    'event_start' => $event->event_start?->toDateTimeString(),
-                    'response_rate' => $rate,
-                    'guests_total' => $total,
-                    'guests_accepted' => (int) $event->guests_accepted,
-                    'guests_declined' => (int) $event->guests_declined,
-                    'guests_responded' => $responded,
-                ];
-            });
+        $payload = $events->getCollection()->map(function (Event $event) {
+            $total = (int) $event->guests_total;
+            $responded = (int) $event->guests_responded;
+            $rate = $total === 0 ? 0.0 : round(($responded / $total) * 100, 2);
+
+            return [
+                'id' => $event->id,
+                'title' => $event->title,
+                'event_start' => $event->event_start?->toDateTimeString(),
+                'response_rate' => $rate,
+                'guests_total' => $total,
+                'guests_accepted' => (int) $event->guests_accepted,
+                'guests_declined' => (int) $event->guests_declined,
+                'guests_responded' => $responded,
+            ];
+        })->values();
 
         return response()->json([
-            'total_events' => $events->count(),
-            'events' => $events,
+            'total_events' => $events->total(),
+            'events' => $payload,
+            'current_page' => $events->currentPage(),
+            'last_page' => $events->lastPage(),
+            'per_page' => $events->perPage(),
+            'prev_page_url' => $events->previousPageUrl(),
+            'next_page_url' => $events->nextPageUrl(),
         ]);
     }
 
