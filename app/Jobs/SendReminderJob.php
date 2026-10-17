@@ -22,7 +22,14 @@ class SendReminderJob implements ShouldQueue
 
     public int $tries = 3;
 
-    public function __construct(public Guest $guest) {}
+    /**
+     * @param  list<string>  $channels  Empty means the configured channel set.
+     */
+    public function __construct(
+        public Guest $guest,
+        public array $channels = [],
+        public ?int $deliveryId = null,
+    ) {}
 
     public function handle(): void
     {
@@ -33,10 +40,14 @@ class SendReminderJob implements ShouldQueue
         }
 
         if ($guest->status !== 'pending') {
+            $this->failQueuedRow('No reminder was sent because this guest is not pending.');
+
             return;
         }
 
         if ($guest->reminded_at !== null) {
+            $this->failQueuedRow('No reminder was sent because one has already been accepted for this guest.');
+
             return;
         }
 
@@ -65,11 +76,16 @@ class SendReminderJob implements ShouldQueue
     private function deliver(Guest $guest): void
     {
         $notification = new ReminderNotification($guest->event, $guest->invite_url_absolute);
+
+        if ($this->channels !== []) {
+            $notification->onlyChannels($this->channels);
+        }
+
         $channels = $notification->via($guest);
 
         if ($channels === []) {
-            // No configured channel is available, or the Delivery Lab blocked
-            // this recipient. Do not send and do not mark the guest as reminded.
+            $this->failQueuedRow('No reminder was sent because the selected channel is unavailable for this recipient.');
+
             return;
         }
 
@@ -78,6 +94,7 @@ class SendReminderJob implements ShouldQueue
         $reuseExisting = $this->attempts() > 1;
         $pending = [];
         $rows = [];
+        $precreated = $this->precreatedRow($guest);
 
         foreach ($channels as $channel) {
             $mapped = match ($channel) {
@@ -91,7 +108,9 @@ class SendReminderJob implements ShouldQueue
                 continue;
             }
 
-            $delivery = InvitationDelivery::openFor($guest->id, 'reminder', $mapped, $reuseExisting);
+            $delivery = $precreated && $precreated->channel === $mapped
+                ? $precreated
+                : InvitationDelivery::openFor($guest->id, 'reminder', $mapped, $reuseExisting);
 
             if ($delivery->isCompleted()) {
                 continue;
@@ -103,6 +122,12 @@ class SendReminderJob implements ShouldQueue
         }
 
         if ($pending === []) {
+            if ($precreated && $precreated->status === 'queued') {
+                $this->failQueuedRow('No reminder was sent because the selected channel did not produce a new delivery attempt.');
+
+                return;
+            }
+
             $guest->forceFill(['reminded_at' => now()])->save();
 
             return;
@@ -163,6 +188,41 @@ class SendReminderJob implements ShouldQueue
             ->whereIn('id', array_map(static fn (InvitationDelivery $row) => $row->id, $rows))
             ->whereIn('status', ['sent', 'delivered'])
             ->exists();
+    }
+
+    private function precreatedRow(Guest $guest): ?InvitationDelivery
+    {
+        if ($this->deliveryId === null) {
+            return null;
+        }
+
+        $delivery = InvitationDelivery::find($this->deliveryId);
+
+        return $delivery
+            && $delivery->guest_id === $guest->id
+            && $delivery->kind === 'reminder'
+            && in_array($delivery->channel, $this->channels, true)
+                ? $delivery
+                : null;
+    }
+
+    private function failQueuedRow(string $reason): void
+    {
+        if ($this->deliveryId === null) {
+            return;
+        }
+
+        $delivery = InvitationDelivery::find($this->deliveryId);
+
+        if (! $delivery || $delivery->status !== 'queued') {
+            return;
+        }
+
+        $delivery->forceFill([
+            'status' => 'failed',
+            'failed_at' => now(),
+            'error' => $reason,
+        ])->save();
     }
 
     public function failed(Throwable $exception): void

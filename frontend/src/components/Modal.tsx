@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useId, useRef } from 'react';
 import type { ReactNode } from 'react';
 
 interface ModalProps {
@@ -12,6 +12,7 @@ interface ModalProps {
 
 export function Modal({ open, title, onClose, children, busy = false, maxWidth }: ModalProps) {
     const ref = useRef<HTMLDivElement>(null);
+    const titleId = useId();
 
     // Keep the latest callbacks in refs so the effect below can depend only on
     // `open`. Depending on `onClose`/`busy` would re-run it on every render
@@ -24,43 +25,79 @@ export function Modal({ open, title, onClose, children, busy = false, maxWidth }
     useEffect(() => {
         if (!open) return;
 
+        const root = ref.current;
+        const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        const focusableSelector =
+            'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+        const focusableElements = () =>
+            Array.from(root?.querySelectorAll<HTMLElement>(focusableSelector) ?? []).filter(
+                (element) => element.getAttribute('aria-hidden') !== 'true' && !element.hasAttribute('hidden'),
+            );
+
+        const initialTarget = focusableElements()[0] ?? root;
+        initialTarget?.focus();
+
         const onKey = (e: KeyboardEvent) => {
-            if (e.key === 'Escape' && !busyRef.current) {
-                onCloseRef.current();
+            if (e.key === 'Escape') {
+                if (!busyRef.current) onCloseRef.current();
+                return;
+            }
+
+            if (e.key !== 'Tab' || !root) return;
+            const elements = focusableElements();
+            if (elements.length === 0) {
+                e.preventDefault();
+                root.focus();
+                return;
+            }
+
+            const first = elements[0];
+            const last = elements[elements.length - 1];
+            if (e.shiftKey && (document.activeElement === first || !root.contains(document.activeElement))) {
+                e.preventDefault();
+                last.focus();
+            } else if (!e.shiftKey && (document.activeElement === last || !root.contains(document.activeElement))) {
+                e.preventDefault();
+                first.focus();
             }
         };
-        document.addEventListener('keydown', onKey);
 
-        const focusTimer = window.setTimeout(() => {
-            const root = ref.current;
-            if (!root) return;
-            const target =
-                root.querySelector<HTMLElement>('input:not([type=hidden]), select, textarea') ??
-                root.querySelector<HTMLElement>('button');
-            target?.focus();
-        }, 0);
+        const onFocusIn = (event: FocusEvent) => {
+            if (!root || root.contains(event.target as Node)) return;
+            (focusableElements()[0] ?? root).focus();
+        };
+
+        document.addEventListener('keydown', onKey);
+        document.addEventListener('focusin', onFocusIn);
 
         return () => {
             document.removeEventListener('keydown', onKey);
-            window.clearTimeout(focusTimer);
+            document.removeEventListener('focusin', onFocusIn);
+            if (previousFocus?.isConnected) previousFocus.focus();
         };
     }, [open]);
 
     if (!open) return null;
 
     return (
-        <div className="modal-backdrop" onClick={() => !busy && onClose()}>
+        <div
+            className="modal-backdrop"
+            onClick={(event) => {
+                if (event.target === event.currentTarget && !busy) onClose();
+            }}
+        >
             <div
                 className="modal"
                 role="dialog"
                 aria-modal="true"
-                aria-labelledby="app-modal-title"
+                aria-labelledby={titleId}
+                tabIndex={-1}
                 style={maxWidth ? { maxWidth } : undefined}
                 ref={ref}
                 onClick={(e) => e.stopPropagation()}
             >
                 <div className="modal-head">
-                    <h2 id="app-modal-title">{title}</h2>
+                    <h2 id={titleId}>{title}</h2>
                     <button
                         type="button"
                         className="btn btn-link"

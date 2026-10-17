@@ -17,6 +17,7 @@ use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\EventTypeController;
 use App\Http\Controllers\Api\InvitationDesignController;
 use App\Http\Controllers\InviteController;
+use App\Http\Controllers\PublicPassController;
 use App\Http\Controllers\Webhooks\DeliveryWebhookController;
 use App\Http\Middleware\EnsureEventCapability;
 use Illuminate\Support\Facades\Route;
@@ -125,6 +126,7 @@ Route::prefix('api/v1')->group(function () {
         });
 
         Route::middleware('throttle:admin-read')->group(function () {
+            Route::get('events/{event}/communication/channels', [InvitationController::class, 'channels'])->name('api.events.communication.channels');
             Route::get('events/{event}/invitations/preview', [InvitationController::class, 'preview'])->name('api.events.invitations.preview');
             Route::get('events/{event}/deliveries', [InvitationController::class, 'deliveries'])->name('api.events.deliveries');
             Route::get('events/{event}/deliveries/failed', [InvitationController::class, 'failed'])->name('api.events.deliveries.failed');
@@ -226,6 +228,8 @@ Route::prefix('api/v1')->group(function () {
         Route::get('public/invites/{token}', [InviteController::class, 'apiShow'])->name('api.invites.show');
         Route::post('public/invites/{token}', [InviteController::class, 'store'])->name('api.invites.store');
         Route::get('public/invites/{token}/qr', [InviteController::class, 'qr'])->name('api.invites.qr');
+        Route::get('public/invites/{token}/pass', [PublicPassController::class, 'show'])->name('api.invites.pass');
+        Route::get('public/invites/{token}/pass/qr', [PublicPassController::class, 'qr'])->name('api.invites.pass.qr');
     });
 
     // Delivery provider callbacks. Excluded from CSRF in bootstrap/app.php and

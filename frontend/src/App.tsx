@@ -18,6 +18,7 @@ import { CelebrationsPage } from './pages/CelebrationsPage';
 import { CelebrationDetailPage } from './pages/CelebrationDetailPage';
 import { InvitationDesignerPage } from './pages/InvitationDesignerPage';
 import { PublicInvitePage } from './pages/PublicInvitePage';
+import { PublicPassPage } from './pages/PublicPassPage';
 
 export function App() {
     // The SPA is mounted at the site root. Its static assets are emitted under
@@ -30,6 +31,7 @@ export function App() {
                     <Route path="/login" element={<LoginPage />} />
                     <Route path="/register" element={<RegisterPage />} />
                     <Route path="/e/:token" element={<PublicInvitePage />} />
+                    <Route path="/e/:token/pass" element={<PublicPassPage />} />
 
                     <Route
                         element={

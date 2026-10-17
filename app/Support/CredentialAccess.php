@@ -2,6 +2,7 @@
 
 namespace App\Support;
 
+use App\Models\Event;
 use App\Models\InvitationCredential;
 use Illuminate\Support\Carbon;
 
@@ -51,10 +52,7 @@ class CredentialAccess
         }
 
         $now = Carbon::now($event->timezone);
-        $start = Carbon::parse($event->event_start)->timezone($event->timezone);
-
-        $from = $start->copy()->subHours((int) config('invitations.credential_valid_before_hours', 6));
-        $until = $start->copy()->addHours((int) config('invitations.credential_valid_after_hours', 12));
+        ['from' => $from, 'until' => $until] = static::window($event);
 
         if ($now->lessThan($from)) {
             return self::NOT_YET;
@@ -65,5 +63,18 @@ class CredentialAccess
         }
 
         return self::VALID;
+    }
+
+    /**
+     * @return array{from: Carbon, until: Carbon}
+     */
+    public static function window(Event $event): array
+    {
+        $start = Carbon::parse($event->event_start)->timezone($event->timezone ?? config('app.timezone'));
+
+        return [
+            'from' => $start->copy()->subHours((int) config('invitations.credential_valid_before_hours', 6)),
+            'until' => $start->copy()->addHours((int) config('invitations.credential_valid_after_hours', 12)),
+        ];
     }
 }

@@ -10,6 +10,7 @@ use App\Models\Event;
 use App\Models\Guest;
 use App\Models\GuestImport;
 use App\Services\ContactResolver;
+use App\Services\GuestCommunication;
 use App\Support\AuditLogger;
 use App\Support\ContactNormalizer;
 use App\Support\GuestDedup;
@@ -21,6 +22,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Spatie\SimpleExcel\SimpleExcelReader;
 use Spatie\SimpleExcel\SimpleExcelWriter;
@@ -30,8 +32,10 @@ class GuestController extends Controller
 {
     private const ALLOWED_IMPORT_EXTENSIONS = ['csv', 'xlsx', 'ods'];
 
-    public function __construct(private readonly ContactResolver $contacts)
-    {
+    public function __construct(
+        private readonly ContactResolver $contacts,
+        private readonly GuestCommunication $communication,
+    ) {
     }
 
     public function index(Request $request, Event $event): JsonResponse
@@ -361,14 +365,43 @@ class GuestController extends Controller
             abort(404);
         }
 
-        $guest->sent_at = null;
-        $guest->save();
+        $data = $request->validate([
+            'channel' => ['nullable', Rule::in(GuestCommunication::CHANNELS)],
+        ]);
 
-        dispatch(new SendInvitationJob($guest));
+        $channel = $data['channel'] ?? null;
 
-        AuditLogger::log($request, 'guests.resend', $guest);
+        if ($channel === null) {
+            // Preserve the original API behaviour for callers that do not choose
+            // a channel yet. The React interface always sends an explicit one.
+            $guest->sent_at = null;
+            $guest->save();
 
-        return response()->json(['queued' => true], 202);
+            dispatch(new SendInvitationJob($guest));
+
+            AuditLogger::log($request, 'guests.resend', $guest);
+
+            return response()->json(['queued' => true], 202);
+        }
+
+        $result = $this->communication->queue($guest, 'invitation', $channel, individual: true);
+
+        if (! $result['queued']) {
+            return response()->json(['message' => $result['reason']], 422);
+        }
+
+        AuditLogger::log($request, 'guests.resend', $guest, [
+            'channel' => $channel,
+            'delivery_id' => $result['delivery']?->id,
+        ]);
+
+        return response()->json([
+            'queued' => true,
+            'queued_count' => 1,
+            'kind' => 'invitation',
+            'channel' => $channel,
+            'rejected' => [],
+        ], 202);
     }
 
     public function remind(Request $request, Event $event, Guest $guest): JsonResponse
@@ -385,33 +418,150 @@ class GuestController extends Controller
             return response()->json(['message' => 'This guest is not eligible for a reminder.'], 422);
         }
 
-        dispatch(new SendReminderJob($guest));
+        $data = $request->validate([
+            'channel' => ['nullable', Rule::in(GuestCommunication::CHANNELS)],
+        ]);
 
-        AuditLogger::log($request, 'guests.remind', $guest);
+        $channel = $data['channel'] ?? null;
 
-        return response()->json(['queued' => true], 202);
+        if ($channel === null) {
+            dispatch(new SendReminderJob($guest));
+
+            AuditLogger::log($request, 'guests.remind', $guest);
+
+            return response()->json(['queued' => true], 202);
+        }
+
+        $result = $this->communication->queue($guest, 'reminder', $channel, individual: true);
+
+        if (! $result['queued']) {
+            return response()->json(['message' => $result['reason']], 422);
+        }
+
+        AuditLogger::log($request, 'guests.remind', $guest, [
+            'channel' => $channel,
+            'delivery_id' => $result['delivery']?->id,
+        ]);
+
+        return response()->json([
+            'queued' => true,
+            'queued_count' => 1,
+            'kind' => 'reminder',
+            'channel' => $channel,
+            'rejected' => [],
+        ], 202);
     }
 
     public function sendReminders(Request $request, Event $event): JsonResponse
     {
         $this->authorize('update', $event);
 
-        $cutoff = Carbon::now()->subDays(2);
+        $data = $request->validate([
+            'channel' => ['nullable', Rule::in(GuestCommunication::CHANNELS)],
+            'guest_ids' => ['nullable', 'array', 'max:500'],
+            'guest_ids.*' => ['integer', 'distinct', 'min:1'],
+        ]);
 
-        $guests = $event->guests()
-            ->pending()
-            ->unreminded()
-            ->whereNotNull('sent_at')
-            ->where('sent_at', '<=', $cutoff)
-            ->get();
+        $channel = $data['channel'] ?? null;
+        $selectedIds = $data['guest_ids'] ?? null;
 
-        foreach ($guests as $guest) {
-            dispatch(new SendReminderJob($guest));
+        if ($selectedIds !== null && $channel === null) {
+            throw ValidationException::withMessages([
+                'channel' => ['Select a communication channel for the selected guests.'],
+            ]);
         }
 
-        AuditLogger::log($request, 'guests.reminders.send', $event, ['queued' => $guests->count()]);
+        if ($channel === null) {
+            // Original bulk operation: all eligible guests, configured channels.
+            $cutoff = Carbon::now()->subDays(2);
+            $count = 0;
 
-        return response()->json(['queued' => $guests->count()], 202);
+            $event->guests()
+                ->pending()
+                ->unreminded()
+                ->whereNotNull('sent_at')
+                ->where('sent_at', '<=', $cutoff)
+                ->orderBy('id')
+                ->chunkById(500, function ($guests) use (&$count) {
+                    foreach ($guests as $guest) {
+                        dispatch(new SendReminderJob($guest));
+                        $count++;
+                    }
+                });
+
+            AuditLogger::log($request, 'guests.reminders.send', $event, ['queued' => $count]);
+
+            return response()->json(['queued' => $count], 202);
+        }
+
+        $rejected = [];
+        $queued = 0;
+        $cutoff = Carbon::now()->subDays(2);
+
+        if ($selectedIds !== null) {
+            $found = $event->guests()->whereIn('id', $selectedIds)->get()->keyBy('id');
+
+            foreach ($selectedIds as $guestId) {
+                $guest = $found->get($guestId);
+
+                if (! $guest) {
+                    $rejected[] = [
+                        'guest_id' => (int) $guestId,
+                        'name' => null,
+                        'reason' => 'This guest is not part of this event.',
+                    ];
+
+                    continue;
+                }
+
+                $result = $this->communication->queue($guest, 'reminder', $channel, individual: false);
+
+                if ($result['queued']) {
+                    $queued++;
+                } else {
+                    $rejected[] = [
+                        'guest_id' => $guest->id,
+                        'name' => $guest->name,
+                        'reason' => $result['reason'],
+                    ];
+                }
+            }
+        } else {
+            $event->guests()
+                ->pending()
+                ->unreminded()
+                ->whereNotNull('sent_at')
+                ->where('sent_at', '<=', $cutoff)
+                ->orderBy('id')
+                ->chunkById(500, function ($guests) use (&$queued, &$rejected, $channel) {
+                    foreach ($guests as $guest) {
+                        $result = $this->communication->queue($guest, 'reminder', $channel, individual: false);
+
+                        if ($result['queued']) {
+                            $queued++;
+                        } else {
+                            $rejected[] = [
+                                'guest_id' => $guest->id,
+                                'name' => $guest->name,
+                                'reason' => $result['reason'],
+                            ];
+                        }
+                    }
+                });
+        }
+
+        AuditLogger::log($request, 'guests.reminders.send', $event, [
+            'channel' => $channel,
+            'queued' => $queued,
+            'rejected' => count($rejected),
+        ]);
+
+        return response()->json([
+            'queued' => $queued,
+            'kind' => 'reminder',
+            'channel' => $channel,
+            'rejected' => $rejected,
+        ], 202);
     }
 
     /**

@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-16T19:34:45.7153759Z",
+  "title": "Design System: Invitation Studio",
+  "extensions": {
+    "shadows": [
+      {
+        "name": "card-rest",
+        "value": "0 4px 14px rgb(31 43 40 / 5%)",
+        "purpose": "Subtle hover depth for a clearly interactive event surface."
+      },
+      {
+        "name": "overlay",
+        "value": "0 14px 36px rgb(31 43 40 / 16%)",
+        "purpose": "Separate floating menus, pickers, and dialogs from their backdrop."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-fast",
+        "value": "150ms ease",
+        "purpose": "Button and small color/border feedback."
+      },
+      {
+        "name": "ease-standard",
+        "value": "200ms ease",
+        "purpose": "Standard surface and border transitions."
+      }
+    ],
+    "breakpoints": [
+      { "name": "compact-table", "value": "640px" },
+      { "name": "grid-collapse", "value": "760px" },
+      { "name": "wide-grid-collapse", "value": "900px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The main action, with clear contrast and a persistent keyboard focus ring.",
+      "html": "<button class=\"ds-button-primary\">Create event</button>",
+      "css": ".ds-button-primary { min-height: 44px; padding: 0 16px; border: 1px solid transparent; border-radius: 6px; background: var(--color-accent); color: #fff; font: 600 14px/1.4 var(--font-ui); transition: background-color 150ms ease, color 150ms ease; } .ds-button-primary:hover { background: var(--color-accent-hover); } .ds-button-primary:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; } .ds-button-primary:disabled { background: var(--color-disabled-surface); color: var(--color-disabled); cursor: not-allowed; }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "A quieter action that retains a visible boundary on white surfaces.",
+      "html": "<button class=\"ds-button-secondary\">Cancel</button>",
+      "css": ".ds-button-secondary { min-height: 44px; padding: 0 16px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-surface); color: var(--color-text); font: 600 14px/1.4 var(--font-ui); transition: background-color 150ms ease, border-color 150ms ease; } .ds-button-secondary:hover { background: var(--color-canvas); } .ds-button-secondary:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "A legible, labeled working control with an explicit focus treatment.",
+      "html": "<label class=\"ds-field-label\" for=\"event-title\">Event title</label><input id=\"event-title\" class=\"ds-input\" placeholder=\"Enter a title\">",
+      "css": ".ds-field-label { display: block; margin-bottom: 5px; color: var(--color-text); font: 600 13px/1.4 var(--font-ui); } .ds-input { box-sizing: border-box; width: 100%; min-height: 44px; padding: 8px 11px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-surface); color: var(--color-text); font: 400 16px/1.5 var(--font-ui); } .ds-input:focus-visible { border-color: var(--color-accent); outline: 2px solid var(--color-focus-ring); outline-offset: 1px; } .ds-input:disabled { background: var(--color-disabled-surface); color: var(--color-disabled); }"
+    },
+    {
+      "name": "Success Badge",
+      "kind": "chip",
+      "refersTo": "badge-success",
+      "description": "A compact status with a readable text label and semantic color pairing.",
+      "html": "<span class=\"ds-status-success\">Accepted</span>",
+      "css": ".ds-status-success { display: inline-flex; align-items: center; min-height: 24px; padding: 2px 8px; border: 1px solid var(--color-success-border); border-radius: 999px; background: var(--color-success-soft); color: var(--color-success); font: 600 12px/1.4 var(--font-ui); }"
+    },
+    {
+      "name": "Inline Error",
+      "kind": "custom",
+      "refersTo": "alert-error",
+      "description": "An announced error that names the state in text and preserves a readable contrast pair.",
+      "html": "<div class=\"ds-alert-error\" role=\"alert\" aria-live=\"assertive\"><strong>Error</strong> Please check the highlighted fields.</div>",
+      "css": ".ds-alert-error { padding: 11px 14px; border: 1px solid var(--color-danger-border); border-radius: 8px; background: var(--color-danger-soft); color: var(--color-danger); font: 400 14px/1.5 var(--font-ui); } .ds-alert-error strong { margin-right: 5px; font-weight: 700; }"
+    },
+    {
+      "name": "Working Surface",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "A bounded content surface; use only where grouping improves scanability.",
+      "html": "<section class=\"ds-surface\">Event details</section>",
+      "css": ".ds-surface { padding: 20px; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-surface); color: var(--color-text); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Host’s Fieldbook",
+    "overview": "This is an operating interface for preparing and running events, not a wedding-only design product. Its character comes from editorial hierarchy applied with operational restraint: precise typography, quiet surfaces, reliable state cues, and a single confident accent. The product’s invitations may carry their own event-specific visual styles; the application chrome remains consistent and task-focused.\n\nUse mineral neutrals and jade without literal paper textures, ornamental flourishes, glass effects, or decorative gradients. Figtree carries the working interface. Playfair Display is reserved for editorial/public headings where its contrast adds meaning, not for dense tables or routine controls.",
+    "keyCharacteristics": [
+      "Considered and composed, without slowing down operational tasks.",
+      "Border-led structure with modest depth only where interaction needs it.",
+      "Status is explicit in text and supported—not replaced—by color.",
+      "Shared semantic tokens serve React and Blade without replacing either styling stack."
+    ],
+    "rules": [
+      {
+        "name": "The One Accent Rule",
+        "body": "Jade is the only primary brand accent. Status hues are reserved for status and feedback, not scattered decoration.",
+        "section": "colors"
+      },
+      {
+        "name": "The Working Type Rule",
+        "body": "Never use the editorial face for dense data, status labels, or form controls. Invitation content remains governed by the invitation design selected for that event.",
+        "section": "typography"
+      },
+      {
+        "name": "The Quiet Rest Rule",
+        "body": "The interface is flat at rest. Elevate only a layer that must read as floating or interactive.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do use the shared semantic tokens from resources/css/design-tokens.css in both existing CSS pipelines.",
+      "Do keep status meaning in the label and use color as reinforcing context.",
+      "Do preserve Figtree for operational reading and Playfair Display for selective editorial emphasis.",
+      "Do keep the focus indicator visible and honor reduced-motion preferences.",
+      "Do use borders and whitespace before reaching for shadows or additional cards."
+    ],
+    "donts": [
+      "Don't use a gradient, glass blur, or decorative animation as a substitute for product content.",
+      "Don't make every surface a card or every control pill-shaped.",
+      "Don't use color alone for RSVP, delivery, check-in, pledge, or import state.",
+      "Don't surface pledge balances as payment verification or an admission requirement.",
+      "Don't replace event-specific invitation design typography with application chrome styles."
+    ]
+  }
+}

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, apiErrorMessage, validationErrors } from '../lib/api';
 import type { Celebration, Paginated } from '../lib/types';
-import { Alert, Field, LoadingBlock } from '../components/ui';
+import { Alert, EmptyState, Field, LoadingBlock, PageHeading } from '../components/ui';
 import { Modal } from '../components/Modal';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { ActionMenu } from '../components/ActionMenu';
@@ -122,59 +122,62 @@ export function CelebrationsPage() {
     };
 
     return (
-        <div className="stack">
-            <header className="page-head">
-                <div>
-                    <h1>Celebrations</h1>
-                    <p className="muted page-sub">
-                        Group related occasions (for example a kitchen party, send-off, and ceremony) without merging
-                        their guests, designs, or RSVPs.
-                    </p>
-                </div>
-                <button type="button" className="btn btn-primary" onClick={openCreate}>
-                    New celebration
-                </button>
-            </header>
-
-            {toast ? <Alert kind="success">{toast}</Alert> : null}
-            {error ? <Alert kind="error">{error}</Alert> : null}
-
-            {loading ? (
-                <div className="card">
-                    <LoadingBlock label="Loading celebrations…" />
-                </div>
-            ) : celebrations.length === 0 ? (
-                <div className="card empty-state">
-                    <h3>No celebrations yet</h3>
-                    <p className="muted">
-                        Create a celebration to group related occasions. Events remain fully independent.
-                    </p>
+        <div className="stack celebrations-page">
+            <PageHeading
+                title="Celebrations"
+                description="Group related occasions together. Each event keeps its own date, venue, guest list, invitation, and RSVP lifecycle."
+                actions={
                     <button type="button" className="btn btn-primary" onClick={openCreate}>
                         New celebration
                     </button>
-                </div>
+                }
+            />
+
+            {toast ? <Alert kind="success">{toast}</Alert> : null}
+            {error && (loading || celebrations.length > 0) ? <Alert kind="error">{error}</Alert> : null}
+
+            {loading ? (
+                <section className="list-loading" aria-label="Loading celebrations" aria-busy="true">
+                    <LoadingBlock label="Loading celebrations…" />
+                </section>
+            ) : error && celebrations.length === 0 ? (
+                <section className="page-state page-state-error" aria-label="Celebrations could not be loaded">
+                    <Alert kind="error">{error}</Alert>
+                    <button type="button" className="btn btn-ghost" onClick={() => void load(1)}>
+                        Try again
+                    </button>
+                </section>
+            ) : celebrations.length === 0 ? (
+                <EmptyState
+                    title="Group the occasions that belong together"
+                    description="A celebration is a container for related events—not a shared event record. Dates, venues, guests, invitations, and RSVPs remain with each event."
+                    action={
+                        <button type="button" className="btn btn-primary" onClick={openCreate}>
+                            Create your first celebration
+                        </button>
+                    }
+                />
             ) : (
-                <div className="stack">
+                <div className="celebration-list" aria-label="Celebrations">
                     {celebrations.map((celebration) => {
                         const count = celebration.events_count ?? 0;
                         return (
-                            <div key={celebration.id} className="card row between">
-                                <div>
-                                    <h3 style={{ margin: 0 }}>
+                            <article key={celebration.id} className="celebration-row">
+                                <div className="celebration-row-copy">
+                                    <h2 className="celebration-name">
                                         <Link to={`/celebrations/${celebration.id}`}>{celebration.name}</Link>
-                                    </h3>
-                                    {celebration.description ? (
-                                        <p className="muted" style={{ margin: '0.35rem 0 0' }}>
-                                            {celebration.description}
-                                        </p>
-                                    ) : null}
-                                    <p className="muted small" style={{ margin: '0.35rem 0 0' }}>
-                                        {count === 1 ? '1 event' : `${count} events`}
+                                    </h2>
+                                    <p className="muted celebration-description">
+                                        {celebration.description || 'No description added.'}
                                     </p>
                                 </div>
-                                <div className="row">
+                                <div className="celebration-event-count" aria-label={`${count} events in this celebration`}>
+                                    <strong>{count}</strong>
+                                    <span>{count === 1 ? 'event' : 'events'}</span>
+                                </div>
+                                <div className="row celebration-row-actions">
                                     <Link className="btn btn-ghost btn-sm" to={`/celebrations/${celebration.id}`}>
-                                        View
+                                        View events
                                     </Link>
                                     <ActionMenu
                                         label={`Actions for ${celebration.name}`}
@@ -184,22 +187,23 @@ export function CelebrationsPage() {
                                         ]}
                                     />
                                 </div>
-                            </div>
+                            </article>
                         );
                     })}
                 </div>
             )}
 
             {pagination && pagination.last_page > 1 ? (
-                <div className="row between pagination">
+                <nav className="row between pagination" aria-label="Celebrations pagination">
                     <span className="muted">
-                        Page {pagination.current_page} of {pagination.last_page}
+                        Page {pagination.current_page} of {pagination.last_page} · {pagination.total ?? 0} celebration
+                        {(pagination.total ?? 0) === 1 ? '' : 's'}
                     </span>
                     <div className="row">
                         <button
                             type="button"
                             className="btn btn-sm btn-ghost"
-                            disabled={!pagination.prev_page_url}
+                            disabled={!pagination.prev_page_url || loading}
                             onClick={() => load(pagination.current_page - 1)}
                         >
                             Previous
@@ -207,13 +211,13 @@ export function CelebrationsPage() {
                         <button
                             type="button"
                             className="btn btn-sm btn-ghost"
-                            disabled={!pagination.next_page_url}
+                            disabled={!pagination.next_page_url || loading}
                             onClick={() => load(pagination.current_page + 1)}
                         >
                             Next
                         </button>
                     </div>
-                </div>
+                </nav>
             ) : null}
 
             <Modal

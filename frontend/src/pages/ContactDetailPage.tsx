@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, apiErrorMessage, validationErrors } from '../lib/api';
 import type { Contact, ContactGuest, ContactGuestPage } from '../lib/types';
 import { useRequestGuard } from '../lib/useRequestGuard';
-import { Alert, Field, LoadingBlock, StatusBadge } from '../components/ui';
+import { Alert, EmptyState, Field, LoadingBlock, PageHeading, StatusBadge } from '../components/ui';
 import { Modal } from '../components/Modal';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 
@@ -42,6 +42,7 @@ export function ContactDetailPage() {
     const [guests, setGuests] = useState<ContactGuest[]>([]);
     const [guestPage, setGuestPage] = useState<ContactGuestPage | null>(null);
     const [guestsLoading, setGuestsLoading] = useState(false);
+    const [guestsError, setGuestsError] = useState<string | null>(null);
 
     const [modalOpen, setModalOpen] = useState(false);
     const [form, setForm] = useState<ContactForm>({ name: '', email: '', phone: '', notes: '' });
@@ -78,6 +79,7 @@ export function ContactDetailPage() {
     const loadGuests = useCallback(async (page = 1) => {
         const { signal, isCurrent } = beginGuestsRequest();
         setGuestsLoading(true);
+        setGuestsError(null);
         try {
             const { data } = await api.get<ContactGuestPage>(`/api/v1/contacts/${contactId}/guests`, {
                 params: { page },
@@ -88,7 +90,7 @@ export function ContactDetailPage() {
             setGuestPage(data);
         } catch (err) {
             if (signal.aborted || !isCurrent()) return;
-            setError(apiErrorMessage(err));
+            setGuestsError(apiErrorMessage(err));
         } finally {
             if (isCurrent()) setGuestsLoading(false);
         }
@@ -145,91 +147,107 @@ export function ContactDetailPage() {
     };
 
     if (loading) return <LoadingBlock label="Loading contact…" />;
-    if (!contact) return <Alert kind="error">{error ?? 'Unable to load this contact.'}</Alert>;
+    if (!contact) {
+        return (
+            <section className="page-state page-state-error" aria-label="Contact could not be loaded">
+                <Alert kind="error">{error ?? 'Unable to load this contact.'}</Alert>
+                <button type="button" className="btn btn-ghost" onClick={() => void loadContact()}>
+                    Try again
+                </button>
+                <Link to="/contacts" className="muted">Back to contacts</Link>
+            </section>
+        );
+    }
 
     return (
-        <div className="stack">
-            <div className="row between">
-                <div>
-                    <Link to="/contacts" className="muted">
-                        ← Back to contacts
-                    </Link>
-                    <h1 style={{ marginTop: '0.5rem' }}>{contact.name}</h1>
-                    <p className="muted" style={{ marginTop: 0 }}>
-                        {contact.email || 'No email'}
-                        {contact.phone ? ` · ${contact.phone}` : ''}
-                    </p>
-                </div>
-                <div className="row">
+        <div className="stack contact-detail-page">
+            <Link to="/contacts" className="detail-back-link">Back to contacts</Link>
+            <PageHeading
+                title={contact.name}
+                description={
+                    <span className="contact-heading-meta">
+                        <span>{contact.email || 'No email address'}</span>
+                        <span>{contact.phone || 'No phone number'}</span>
+                    </span>
+                }
+                actions={
+                    <div className="row">
                     <button type="button" className="btn btn-ghost" onClick={openEdit}>
                         Edit contact
                     </button>
                     <button type="button" className="btn btn-danger-solid" onClick={() => setDeleteOpen(true)}>
-                        Delete
+                        Delete contact
                     </button>
-                </div>
-            </div>
+                    </div>
+                }
+            />
 
             {toast ? <Alert kind="success">{toast}</Alert> : null}
             {error ? <Alert kind="error">{error}</Alert> : null}
 
-            <div className="card">
-                <h3 style={{ marginTop: 0 }}>Contact details</h3>
-                <dl className="details-list">
-                    <div>
-                        <dt>Name</dt>
-                        <dd>{contact.name}</dd>
-                    </div>
-                    <div>
-                        <dt>Email</dt>
-                        <dd>{contact.email || '—'}</dd>
-                    </div>
-                    <div>
-                        <dt>Phone</dt>
-                        <dd>{contact.phone || '—'}</dd>
-                    </div>
-                    <div>
-                        <dt>Notes</dt>
-                        <dd>{contact.notes || '—'}</dd>
-                    </div>
-                    <div>
-                        <dt>Linked guests</dt>
-                        <dd>{contact.guests_count}</dd>
-                    </div>
+            <section className="contact-detail-summary" aria-labelledby="contact-details-title">
+                <h2 id="contact-details-title">Contact details</h2>
+                <dl className="details-list contact-detail-list">
+                    <div><dt>Email</dt><dd className="contact-value">{contact.email || 'Not provided'}</dd></div>
+                    <div><dt>Phone</dt><dd className="contact-value">{contact.phone || 'Not provided'}</dd></div>
+                    <div><dt>Notes</dt><dd className="contact-value contact-notes">{contact.notes || 'No notes'}</dd></div>
+                    <div><dt>Linked guest records</dt><dd>{contact.guests_count}</dd></div>
                 </dl>
-            </div>
+                <p className="form-help">
+                    A contact can be linked to guests in multiple events. Editing this record does not change those guest details.
+                </p>
+            </section>
 
-            <div className="card">
-                <h3 style={{ marginTop: 0 }}>Linked guests</h3>
+            <section className="contact-guests-section" aria-labelledby="linked-guests-title">
+                <div className="section-head">
+                    <div>
+                        <h2 id="linked-guests-title">Event guest records</h2>
+                        <p className="muted section-sub">
+                            Each row belongs to one event; RSVP and event details remain event-specific.
+                        </p>
+                    </div>
+                </div>
                 {guestsLoading ? (
                     <LoadingBlock label="Loading linked guests…" />
+                ) : guestsError ? (
+                    <section className="page-state page-state-error" aria-label="Linked guests could not be loaded">
+                        <Alert kind="error">{guestsError}</Alert>
+                        <button type="button" className="btn btn-ghost" onClick={() => void loadGuests(guestPage?.current_page ?? 1)}>
+                            Try again
+                        </button>
+                    </section>
                 ) : guests.length === 0 ? (
-                    <p className="muted" style={{ marginBottom: 0 }}>
-                        No guest records are linked to this contact.
-                    </p>
+                    <EmptyState
+                        title="No linked guest records"
+                        description="This contact is not currently linked to any event guest records."
+                    />
                 ) : (
-                    <div className="table-wrap">
+                    <div className="table-wrap contact-guests-table-wrap">
                         <table>
+                            <caption className="visually-hidden">Event guest records linked to {contact.name}</caption>
                             <thead>
                                 <tr>
-                                    <th>Guest</th>
-                                    <th className="col-hide-sm">Event</th>
-                                    <th className="col-hide-sm">When</th>
-                                    <th>RSVP</th>
+                                    <th scope="col">Guest</th>
+                                    <th scope="col" className="col-hide-sm">Event</th>
+                                    <th scope="col" className="col-hide-sm">Event date</th>
+                                    <th scope="col">RSVP</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {guests.map((guest) => (
                                     <tr key={guest.id}>
                                         <td className="cell-strong">
+                                            <span className="contact-guest-name">{guest.name}</span>
                                             {guest.event ? (
-                                                <Link to={`/events/${guest.event.id}`}>{guest.name}</Link>
-                                            ) : (
-                                                guest.name
-                                            )}
+                                                <Link className="contact-mobile-event" to={`/events/${guest.event.id}`}>
+                                                    {guest.event.title}
+                                                </Link>
+                                            ) : null}
                                         </td>
-                                        <td className="muted col-hide-sm">{guest.event?.title ?? '—'}</td>
-                                        <td className="muted col-hide-sm">
+                                        <td className="muted col-hide-sm contact-value">
+                                            {guest.event ? <Link to={`/events/${guest.event.id}`}>{guest.event.title}</Link> : '—'}
+                                        </td>
+                                        <td className="muted col-hide-sm contact-value">
                                             {formatWhen(guest.event?.event_start)}
                                         </td>
                                         <td>
@@ -243,15 +261,16 @@ export function ContactDetailPage() {
                 )}
 
                 {guestPage && guestPage.last_page > 1 ? (
-                    <div className="row between pagination">
+                    <nav className="row between pagination" aria-label="Linked guests pagination">
                         <span className="muted">
-                            Page {guestPage.current_page} of {guestPage.last_page}
+                            Page {guestPage.current_page} of {guestPage.last_page} · {guestPage.total ?? 0} guest record
+                            {(guestPage.total ?? 0) === 1 ? '' : 's'}
                         </span>
                         <div className="row">
                             <button
                                 type="button"
                                 className="btn btn-sm btn-ghost"
-                                disabled={!guestPage.prev_page_url}
+                                disabled={!guestPage.prev_page_url || guestsLoading}
                                 onClick={() => void loadGuests(guestPage.current_page - 1)}
                             >
                                 Previous
@@ -259,15 +278,15 @@ export function ContactDetailPage() {
                             <button
                                 type="button"
                                 className="btn btn-sm btn-ghost"
-                                disabled={!guestPage.next_page_url}
+                                disabled={!guestPage.next_page_url || guestsLoading}
                                 onClick={() => void loadGuests(guestPage.current_page + 1)}
                             >
                                 Next
                             </button>
                         </div>
-                    </div>
+                    </nav>
                 ) : null}
-            </div>
+            </section>
 
             <Modal open={modalOpen} title="Edit contact" onClose={() => setModalOpen(false)} busy={saving} maxWidth={480}>
                 <form onSubmit={save}>

@@ -127,6 +127,10 @@ class WorkflowCompletionTest extends TestCase
     public function test_admin_can_retry_failed_delivery(): void
     {
         Bus::fake();
+        config([
+            'invitations.channels' => ['sms'],
+            'invitations.sms.endpoint' => 'https://sms.example.test/send',
+        ]);
 
         $user = User::factory()->create();
         $event = Event::factory()->create(['user_id' => $user->id]);
@@ -194,6 +198,10 @@ class WorkflowCompletionTest extends TestCase
     public function test_failed_deliveries_list_and_bulk_retry(): void
     {
         Bus::fake();
+        config([
+            'invitations.channels' => ['sms'],
+            'invitations.sms.endpoint' => 'https://sms.example.test/send',
+        ]);
 
         $user = User::factory()->create();
         $event = Event::factory()->create(['user_id' => $user->id]);

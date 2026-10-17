@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, apiErrorMessage, validationErrors } from '../lib/api';
 import type {
+    CommunicationKind,
     CredentialWithCode,
     CredentialQueuedResponse,
     Guest,
@@ -12,6 +13,8 @@ import { Alert, LoadingBlock, StatusBadge } from './ui';
 import { ActionMenu } from './ActionMenu';
 import { Modal } from './Modal';
 import { ConfirmDialog } from './ConfirmDialog';
+import { CommunicationDialog } from './CommunicationDialog';
+import type { CommunicationScope } from './CommunicationDialog';
 import { useRequestGuard } from '../lib/useRequestGuard';
 
 const ALLOWED_EXTENSIONS = ['csv', 'xlsx', 'ods'];
@@ -74,8 +77,14 @@ export function GuestsPanel({ eventId, eventTitle, checkInEnabled }: Props) {
     const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
 
     const [exporting, setExporting] = useState(false);
-    const [remindingId, setRemindingId] = useState<number | null>(null);
-    const [resendingId, setResendingId] = useState<number | null>(null);
+
+    const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+    const [communication, setCommunication] = useState<{
+        kind: CommunicationKind;
+        scope: CommunicationScope;
+        guests: Guest[];
+    } | null>(null);
+    const selectAllRef = useRef<HTMLInputElement>(null);
 
     const [formOpen, setFormOpen] = useState(false);
     const [form, setForm] = useState<GuestForm>(emptyForm);
@@ -87,8 +96,6 @@ export function GuestsPanel({ eventId, eventTitle, checkInEnabled }: Props) {
     const [credentialGuest, setCredentialGuest] = useState<Guest | null>(null);
     const [deleteTarget, setDeleteTarget] = useState<Guest | null>(null);
     const [deleting, setDeleting] = useState(false);
-    const [remindersOpen, setRemindersOpen] = useState(false);
-    const [remindersBusy, setRemindersBusy] = useState(false);
 
     const [importOpen, setImportOpen] = useState(false);
     const [importFile, setImportFile] = useState<File | null>(null);
@@ -142,12 +149,15 @@ export function GuestsPanel({ eventId, eventTitle, checkInEnabled }: Props) {
     const refresh = () => fetchGuests(currentPage, appliedSearch, appliedStatus, pageSize);
 
     const applyFilters = () => {
-        setAppliedSearch(search);
+        clearSelection();
+        const term = search.trim();
+        setAppliedSearch(term);
         setAppliedStatus(status);
-        void fetchGuests(1, search, status, pageSize);
+        void fetchGuests(1, term, status, pageSize);
     };
 
     const clearFilters = () => {
+        clearSelection();
         setSearch('');
         setStatus('');
         setAppliedSearch('');
@@ -156,6 +166,7 @@ export function GuestsPanel({ eventId, eventTitle, checkInEnabled }: Props) {
     };
 
     const changePageSize = (size: number) => {
+        clearSelection();
         setPageSize(size);
         void fetchGuests(1, appliedSearch, appliedStatus, size);
     };
@@ -202,31 +213,48 @@ export function GuestsPanel({ eventId, eventTitle, checkInEnabled }: Props) {
         }
     };
 
-    // ---- Row actions ----
-    const resend = async (guest: Guest) => {
-        setResendingId(guest.id);
-        try {
-            await api.post(`/api/v1/events/${eventId}/guests/${guest.id}/resend`);
-            notify(`Invitation resend queued for ${guest.name}.`);
-            await refresh();
-        } catch (err) {
-            setError(apiErrorMessage(err));
-        } finally {
-            setResendingId(null);
-        }
+    // ---- Selection and communication ----
+    const clearSelection = () => setSelectedIds(new Set());
+
+    const toggleGuest = (guestId: number) => {
+        setSelectedIds((current) => {
+            const next = new Set(current);
+            if (next.has(guestId)) next.delete(guestId);
+            else next.add(guestId);
+            return next;
+        });
     };
 
-    const remind = async (guest: Guest) => {
-        setRemindingId(guest.id);
-        try {
-            await api.post(`/api/v1/events/${eventId}/guests/${guest.id}/remind`);
-            notify(`Reminder queued for ${guest.name}.`);
-            await refresh();
-        } catch (err) {
-            setError(apiErrorMessage(err));
-        } finally {
-            setRemindingId(null);
+    const selectedGuests = guests.filter((guest) => selectedIds.has(guest.id));
+    const pageGuestIds = guests.map((guest) => guest.id);
+    const allPageSelected = pageGuestIds.length > 0 && pageGuestIds.every((id) => selectedIds.has(id));
+    const somePageSelected = pageGuestIds.some((id) => selectedIds.has(id));
+
+    useEffect(() => {
+        if (selectAllRef.current) {
+            selectAllRef.current.indeterminate = somePageSelected && !allPageSelected;
         }
+    }, [somePageSelected, allPageSelected]);
+
+    const togglePage = () => {
+        setSelectedIds((current) => {
+            const next = new Set(current);
+            if (allPageSelected) {
+                pageGuestIds.forEach((id) => next.delete(id));
+            } else {
+                pageGuestIds.forEach((id) => next.add(id));
+            }
+            return next;
+        });
+    };
+
+    const openCommunication = (kind: CommunicationKind, scope: CommunicationScope, targets: Guest[]) => {
+        setCommunication({ kind, scope, guests: targets });
+    };
+
+    const handleCommunicationCompleted = async () => {
+        if (communication?.scope === 'selected') clearSelection();
+        await refresh();
     };
 
     const confirmDelete = async () => {
@@ -242,24 +270,6 @@ export function GuestsPanel({ eventId, eventTitle, checkInEnabled }: Props) {
             setError(apiErrorMessage(err));
         } finally {
             setDeleting(false);
-        }
-    };
-
-    const confirmReminders = async () => {
-        setRemindersBusy(true);
-        try {
-            const { data } = await api.post<{ queued: number }>(`/api/v1/events/${eventId}/guests/reminders`);
-            setRemindersOpen(false);
-            notify(
-                data.queued > 0
-                    ? `Reminders queued for ${data.queued} eligible guest(s).`
-                    : 'No guests were eligible for a reminder.',
-            );
-            await refresh();
-        } catch (err) {
-            setError(apiErrorMessage(err));
-        } finally {
-            setRemindersBusy(false);
         }
     };
 
@@ -382,6 +392,7 @@ export function GuestsPanel({ eventId, eventTitle, checkInEnabled }: Props) {
     }, [importStatus, eventId]);
 
     const importTerminal = importStatus?.status === 'completed' || importStatus?.status === 'failed';
+    const initialLoadError = !loading && error !== null && guests.length === 0;
 
     return (
         <section className="guests-panel">
@@ -418,19 +429,55 @@ export function GuestsPanel({ eventId, eventTitle, checkInEnabled }: Props) {
                     <button type="button" className="btn btn-ghost" onClick={exportGuests} disabled={exporting}>
                         {exporting ? 'Exporting…' : 'Export guests'}
                     </button>
-                    <button type="button" className="btn btn-ghost" onClick={() => setRemindersOpen(true)}>
+                    <button
+                        type="button"
+                        className="btn btn-ghost"
+                        onClick={() => openCommunication('reminder', 'all-reminder-eligible', [])}
+                    >
                         Send reminders
                     </button>
                 </div>
             </header>
 
             {toast ? <Alert kind="success">{toast}</Alert> : null}
-            {error ? <Alert kind="error">{error}</Alert> : null}
+            {error && !initialLoadError ? <Alert kind="error">{error}</Alert> : null}
 
-            <div className="toolbar">
+            {selectedIds.size > 0 ? (
+                <div className="recipient-selection-bar" role="status" aria-live="polite">
+                    <div className="recipient-selection-copy">
+                        <strong>{selectedIds.size} selected</strong>
+                        <span>
+                            {allPageSelected
+                                ? `All ${guests.length} guests on this page are selected.`
+                                : 'Only guests selected on this page are included.'}
+                        </span>
+                        <button type="button" className="btn btn-link" onClick={clearSelection}>
+                            Clear selection
+                        </button>
+                    </div>
+                    <div className="row recipient-selection-actions">
+                        <button
+                            type="button"
+                            className="btn btn-sm btn-ghost"
+                            onClick={() => openCommunication('invitation', 'selected', selectedGuests)}
+                        >
+                            Send invitations
+                        </button>
+                        <button
+                            type="button"
+                            className="btn btn-sm btn-primary"
+                            onClick={() => openCommunication('reminder', 'selected', selectedGuests)}
+                        >
+                            Send reminders
+                        </button>
+                    </div>
+                </div>
+            ) : null}
+
+            <form className="toolbar guest-filters" role="search" aria-label="Filter guests" onSubmit={(event) => { event.preventDefault(); applyFilters(); }}>
                 <div className="search-field">
                     <label className="label" htmlFor="guest-search">
-                        Search
+                        Find a guest
                     </label>
                     <input
                         id="guest-search"
@@ -439,7 +486,6 @@ export function GuestsPanel({ eventId, eventTitle, checkInEnabled }: Props) {
                         placeholder="Name or email"
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && applyFilters()}
                     />
                 </div>
                 <div className="filter-field">
@@ -458,21 +504,26 @@ export function GuestsPanel({ eventId, eventTitle, checkInEnabled }: Props) {
                         <option value="declined">Declined</option>
                     </select>
                 </div>
-                <button type="button" className="btn btn-ghost" onClick={applyFilters}>
-                    Apply
+                <button type="submit" className="btn btn-ghost" disabled={loading}>
+                    Apply filters
                 </button>
                 {hasFilters ? (
-                    <button type="button" className="btn btn-link" onClick={clearFilters}>
-                        Clear
+                    <button type="button" className="btn btn-link" onClick={clearFilters} disabled={loading}>
+                        Clear filters
                     </button>
                 ) : null}
-            </div>
+            </form>
+
+            <p className="muted guest-batch-hint">
+                Select guests on this page with the checkboxes to send a batch invitation or reminder.
+            </p>
 
             {loading ? (
-                <div className="table-wrap" aria-hidden="true">
+                <div className="table-wrap" aria-label="Loading guests" aria-busy="true">
                     <table>
                         <thead>
                             <tr>
+                                <th className="select-cell" aria-hidden="true" />
                                 <th>Name</th>
                                 <th className="col-hide-sm">Email</th>
                                 <th>RSVP</th>
@@ -483,6 +534,7 @@ export function GuestsPanel({ eventId, eventTitle, checkInEnabled }: Props) {
                         <tbody>
                             {[0, 1, 2, 3].map((i) => (
                                 <tr key={i}>
+                                    <td className="select-cell"><span className="skeleton" style={{ width: 16, height: 16 }} /></td>
                                     <td><span className="skeleton" style={{ width: '60%' }} /></td>
                                     <td className="col-hide-sm"><span className="skeleton" style={{ width: '70%' }} /></td>
                                     <td><span className="skeleton" style={{ width: 56 }} /></td>
@@ -493,6 +545,13 @@ export function GuestsPanel({ eventId, eventTitle, checkInEnabled }: Props) {
                         </tbody>
                     </table>
                 </div>
+            ) : initialLoadError ? (
+                <section className="page-state page-state-error" aria-label="Guests could not be loaded">
+                    <Alert kind="error">{error}</Alert>
+                    <button type="button" className="btn btn-ghost" onClick={refresh}>
+                        Try again
+                    </button>
+                </section>
             ) : guests.length === 0 ? (
                 <div className="empty-state">
                     {hasFilters ? (
@@ -519,44 +578,72 @@ export function GuestsPanel({ eventId, eventTitle, checkInEnabled }: Props) {
                     )}
                 </div>
             ) : (
-                <div className="table-wrap">
+                <div className="table-wrap guest-table-wrap">
                     <table>
+                        <caption className="visually-hidden">Guests, RSVP status, and invitation actions for this event</caption>
                         <thead>
                             <tr>
-                                <th>Name</th>
-                                <th className="col-hide-sm">Email</th>
-                                <th className="col-hide-sm">Phone</th>
-                                <th>RSVP</th>
-                                <th>Attending</th>
-                                <th className="col-hide-sm">Invited</th>
-                                <th style={{ textAlign: 'right' }}>Actions</th>
+                                <th scope="col" className="select-cell">
+                                    <input
+                                        ref={selectAllRef}
+                                        type="checkbox"
+                                        className="guest-select-checkbox"
+                                        aria-label="Select all guests on this page"
+                                        checked={allPageSelected}
+                                        onChange={togglePage}
+                                    />
+                                </th>
+                                <th scope="col">Guest</th>
+                                <th scope="col" className="col-hide-sm">Email</th>
+                                <th scope="col" className="col-hide-sm">Phone</th>
+                                <th scope="col">RSVP</th>
+                                <th scope="col" className="col-hide-sm">Attending</th>
+                                <th scope="col" className="col-hide-sm">Provider accepted</th>
+                                <th scope="col" className="table-actions-heading">
+                                    <span className="guest-actions-label">Actions</span>
+                                </th>
                             </tr>
                         </thead>
                         <tbody>
                             {guests.map((g) => {
                                 const canRemind = g.status === 'pending' && !g.reminded_at;
                                 return (
-                                    <tr key={g.id}>
-                                        <td className="cell-strong">
-                                            {g.name}
+                                    <tr key={g.id} className={selectedIds.has(g.id) ? 'is-selected' : undefined}>
+                                        <td className="select-cell">
+                                            <input
+                                                type="checkbox"
+                                                className="guest-select-checkbox"
+                                                aria-label={`Select ${g.name}`}
+                                                checked={selectedIds.has(g.id)}
+                                                onChange={() => toggleGuest(g.id)}
+                                            />
+                                        </td>
+                                        <td className="cell-strong guest-name-cell">
+                                            <span>{g.name}</span>
                                             {g.reminded_at ? (
                                                 <span className="row-tag" title={`Reminded ${formatWhen(g.reminded_at)}`}>
                                                     reminded
                                                 </span>
                                             ) : null}
+                                            <span className="guest-contact-summary">
+                                                <span>{g.email || g.phone || 'No contact detail'}</span>
+                                                {g.status === 'accepted' ? (
+                                                    <span>{g.rsvp?.attending_count ?? 1} attending</span>
+                                                ) : null}
+                                            </span>
                                         </td>
-                                        <td className="muted col-hide-sm">{g.email || '—'}</td>
-                                        <td className="muted col-hide-sm">{g.phone || '—'}</td>
+                                        <td className="muted col-hide-sm contact-value">{g.email || '—'}</td>
+                                        <td className="muted col-hide-sm contact-value">{g.phone || '—'}</td>
                                         <td>
                                             <StatusBadge status={g.status} />
                                         </td>
-                                        <td className="muted">
+                                        <td className="muted col-hide-sm">
                                             {g.status === 'accepted' ? (g.rsvp?.attending_count ?? 1) : '—'}
                                         </td>
                                         <td className="muted col-hide-sm">
-                                            {g.sent_at ? new Date(g.sent_at).toLocaleDateString() : 'Not sent'}
+                                            {g.sent_at ? new Date(g.sent_at).toLocaleDateString() : 'Not accepted'}
                                         </td>
-                                        <td style={{ textAlign: 'right' }}>
+                                        <td className="table-actions-cell">
                                             <ActionMenu
                                                 label={`Actions for ${g.name}`}
                                                 items={[
@@ -571,16 +658,21 @@ export function GuestsPanel({ eventId, eventTitle, checkInEnabled }: Props) {
                                                               },
                                                           ]
                                                         : []),
-                                                    { label: 'Resend invitation', onSelect: () => resend(g) },
+                                                    {
+                                                        label: 'Resend invitation',
+                                                        onSelect: () => openCommunication('invitation', 'individual', [g]),
+                                                    },
                                                     ...(canRemind
-                                                        ? [{ label: 'Send reminder', onSelect: () => remind(g) }]
+                                                        ? [
+                                                              {
+                                                                  label: 'Send reminder',
+                                                                  onSelect: () => openCommunication('reminder', 'individual', [g]),
+                                                              },
+                                                          ]
                                                         : []),
                                                     { label: 'Delete guest', onSelect: () => setDeleteTarget(g), danger: true },
                                                 ]}
                                             />
-                                            {resendingId === g.id || remindingId === g.id ? (
-                                                <span className="muted small"> working…</span>
-                                            ) : null}
                                         </td>
                                     </tr>
                                 );
@@ -591,7 +683,7 @@ export function GuestsPanel({ eventId, eventTitle, checkInEnabled }: Props) {
             )}
 
             {pagination && total > 0 ? (
-                <div className="row between pagination" aria-label="Guests pagination">
+                <nav className="row between pagination" aria-label="Guests pagination">
                     <div className="row" style={{ gap: '0.75rem', alignItems: 'center' }}>
                         <span className="muted">
                             Page {pagination.current_page} of {pagination.last_page} · {total} guest
@@ -622,25 +714,27 @@ export function GuestsPanel({ eventId, eventTitle, checkInEnabled }: Props) {
                         <button
                             type="button"
                             className="btn btn-sm btn-ghost"
-                            disabled={!pagination.prev_page_url}
-                            onClick={() =>
-                                void fetchGuests(pagination.current_page - 1, appliedSearch, appliedStatus, pageSize)
-                            }
+                                disabled={!pagination.prev_page_url || loading}
+                            onClick={() => {
+                                clearSelection();
+                                void fetchGuests(pagination.current_page - 1, appliedSearch, appliedStatus, pageSize);
+                            }}
                         >
                             Previous
                         </button>
                         <button
                             type="button"
                             className="btn btn-sm btn-ghost"
-                            disabled={!pagination.next_page_url}
-                            onClick={() =>
-                                void fetchGuests(pagination.current_page + 1, appliedSearch, appliedStatus, pageSize)
-                            }
+                                disabled={!pagination.next_page_url || loading}
+                            onClick={() => {
+                                clearSelection();
+                                void fetchGuests(pagination.current_page + 1, appliedSearch, appliedStatus, pageSize);
+                            }}
                         >
                             Next
                         </button>
                     </div>
-                </div>
+                </nav>
             ) : null}
 
             {/* Add / edit guest */}
@@ -713,7 +807,7 @@ export function GuestsPanel({ eventId, eventTitle, checkInEnabled }: Props) {
                 maxWidth={480}
             >
                 {detailsGuest ? (
-                    <dl className="details-list">
+                    <dl className="details-list guest-detail-list">
                         <div><dt>Name</dt><dd>{detailsGuest.name}</dd></div>
                         <div><dt>Email</dt><dd>{detailsGuest.email || '—'}</dd></div>
                         <div><dt>Phone</dt><dd>{detailsGuest.phone || '—'}</dd></div>
@@ -733,7 +827,7 @@ export function GuestsPanel({ eventId, eventTitle, checkInEnabled }: Props) {
                                 </dd>
                             </div>
                         ) : null}
-                        <div><dt>Invited</dt><dd>{detailsGuest.sent_at ? formatWhen(detailsGuest.sent_at) : 'Not sent'}</dd></div>
+                        <div><dt>Provider accepted</dt><dd>{detailsGuest.sent_at ? formatWhen(detailsGuest.sent_at) : 'Not accepted'}</dd></div>
                         <div><dt>Reminded</dt><dd>{detailsGuest.reminded_at ? formatWhen(detailsGuest.reminded_at) : 'Not reminded'}</dd></div>
                     </dl>
                 ) : null}
@@ -785,21 +879,14 @@ export function GuestsPanel({ eventId, eventTitle, checkInEnabled }: Props) {
                 onCancel={() => setDeleteTarget(null)}
             />
 
-            {/* Reminders confirmation */}
-            <ConfirmDialog
-                open={remindersOpen}
-                title="Send reminders"
-                message={
-                    <>
-                        Reminders are sent to <strong>pending</strong> guests who were invited more than{' '}
-                        <strong>2 days ago</strong> and have not been reminded yet. Eligible guests receive one
-                        reminder each.
-                    </>
-                }
-                confirmLabel="Send reminders"
-                busy={remindersBusy}
-                onConfirm={confirmReminders}
-                onCancel={() => setRemindersOpen(false)}
+            <CommunicationDialog
+                open={communication !== null}
+                eventId={eventId}
+                kind={communication?.kind ?? 'invitation'}
+                scope={communication?.scope ?? 'individual'}
+                guests={communication?.guests ?? []}
+                onClose={() => setCommunication(null)}
+                onCompleted={() => void handleCommunicationCompleted()}
             />
 
             {/* Import dialog */}
@@ -972,30 +1059,49 @@ function InviteLinkModal({
             {guest ? (
                 <div className="stack">
                     {inviteUrl ? (
-                        <>
-                            <p className="muted" style={{ marginTop: 0 }}>
-                                Guest-specific link for <strong>{guest.name}</strong>. It stays valid until the event
-                                starts.
-                            </p>
-                            <div className="row">
-                                <input
-                                    ref={inputRef}
-                                    className="input"
-                                    readOnly
-                                    value={inviteUrl}
-                                    onFocus={(e) => e.currentTarget.select()}
-                                    aria-label="Invitation link"
-                                />
-                                <button type="button" className="btn btn-primary" onClick={copy}>
-                                    {copyState === 'copied' ? 'Copied' : 'Copy'}
-                                </button>
+                        <div className="invite-link-layout">
+                            <div className="invite-link-main">
+                                <p className="invite-link-intro">
+                                    Private RSVP link for <strong>{guest.name}</strong>. It stays valid until the event starts.
+                                </p>
+                                <p className="form-help invite-link-privacy">
+                                    Anyone with this link can open this guest’s invitation and update their RSVP. Share it only with the guest.
+                                </p>
+                                <div className="invite-link-control">
+                                    <input
+                                        ref={inputRef}
+                                        className="input invite-link-input"
+                                        readOnly
+                                        value={inviteUrl}
+                                        onFocus={(e) => e.currentTarget.select()}
+                                        aria-label="Invitation link"
+                                        autoComplete="off"
+                                        spellCheck={false}
+                                    />
+                                    <button type="button" className="btn btn-primary" onClick={copy}>
+                                        {copyState === 'copied' ? 'Copied' : 'Copy'}
+                                    </button>
+                                </div>
+                                {copyState === 'copied' ? (
+                                    <p className="invite-link-copy-status" role="status" aria-live="polite">
+                                        Invitation link copied.
+                                    </p>
+                                ) : null}
+                                {copyState === 'error' ? (
+                                    <Alert kind="error">
+                                        Could not copy automatically — select the link and copy it manually.
+                                    </Alert>
+                                ) : null}
+                                <a
+                                    className="btn btn-ghost invite-link-open"
+                                    href={inviteUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                >
+                                    Open invitation
+                                </a>
                             </div>
-                            {copyState === 'error' ? (
-                                <Alert kind="error">
-                                    Could not copy automatically — select the link and copy it manually.
-                                </Alert>
-                            ) : null}
-                            <div className="row" style={{ justifyContent: 'center' }}>
+                            <div className="invite-link-qr" role="group" aria-label={`QR code for ${guest.name}’s invitation`}>
                                 {qrFailed ? (
                                     <Alert kind="error">The QR code could not be loaded.</Alert>
                                 ) : (
@@ -1005,23 +1111,10 @@ function InviteLinkModal({
                                         width={200}
                                         height={200}
                                         onError={() => setQrFailed(true)}
-                                        style={{
-                                            background: '#fff',
-                                            border: '1px solid #e2e8f0',
-                                            borderRadius: 8,
-                                        }}
                                     />
                                 )}
                             </div>
-                            <a
-                                className="btn btn-ghost"
-                                href={inviteUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                            >
-                                Open invitation
-                            </a>
-                        </>
+                        </div>
                     ) : (
                         <Alert kind="error">This guest has no invitation link.</Alert>
                     )}
@@ -1260,7 +1353,7 @@ function CredentialModal({
                             <>
                                 {error ? <Alert kind="error">{error}</Alert> : null}
 
-                                <dl className="details-list">
+                                <dl className="details-list credential-detail-list">
                                     <div>
                                         <dt>Status</dt>
                                         <dd>{credentialStatusLabel(credential)}</dd>
@@ -1305,10 +1398,10 @@ function CredentialModal({
 
                                 {code ? (
                                     <div className="credential-code" role="status" aria-live="polite">
-                                        <span className="muted small" style={{ color: '#cbd5e1' }}>
+                                        <span className="credential-code-label">
                                             Entry code — keep private
                                         </span>
-                                        <span className="credential-code-value">{code}</span>
+                                        <code className="credential-code-value">{code}</code>
                                         <div className="row">
                                             <button
                                                 type="button"
@@ -1329,7 +1422,7 @@ function CredentialModal({
                                     </div>
                                 ) : null}
 
-                                <div className="credential-actions">
+                                <div className="credential-actions" role="group" aria-label="Entry credential actions">
                                     {hasCurrent ? (
                                         <>
                                             <button

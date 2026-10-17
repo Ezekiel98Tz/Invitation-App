@@ -359,7 +359,65 @@ export interface Delivery {
     channel: string;
     status: string;
     error?: string | null;
+    sent_at?: string | null;
+    delivered_at?: string | null;
+    failed_at?: string | null;
+    created_at?: string | null;
+    meta?: Record<string, unknown> | null;
     guest?: Guest | null;
+}
+
+/** The all-history endpoint paginates guests, with each guest's deliveries nested. */
+export interface EventDeliveryGuest extends Guest {
+    deliveries: Delivery[];
+}
+
+export interface EventDeliveryPage extends Paginated<EventDeliveryGuest> {}
+
+/* ---- Guest communication ---- */
+
+export type CommunicationChannelKey = 'mail' | 'sms' | 'whatsapp';
+export type CommunicationKind = 'invitation' | 'reminder';
+
+export interface CommunicationChannelOption {
+    key: CommunicationChannelKey;
+    label: string;
+    available: boolean;
+    configured: boolean;
+    mode: string;
+    reason: string | null;
+    note: string | null;
+}
+
+export interface CommunicationChannelOptions {
+    channels: CommunicationChannelOption[];
+    delivery_lab_restricted: boolean;
+}
+
+export interface CommunicationRejectedRecipient {
+    guest_id: number;
+    name: string | null;
+    reason: string;
+}
+
+export interface CommunicationQueueResult {
+    queued: boolean | number;
+    queued_count?: number;
+    kind?: CommunicationKind;
+    channel?: CommunicationChannelKey;
+    rejected?: CommunicationRejectedRecipient[];
+}
+
+export interface CommunicationPreview {
+    event_id: number;
+    kind: CommunicationKind;
+    recipient: { id: number | null; name: string };
+    channels: {
+        mail?: { subject: string; html?: string; text?: string };
+        sms?: { message: string };
+        whatsapp?: { message: string };
+    };
+    available_channels?: CommunicationChannelOptions;
 }
 
 export interface CustomQuestion {
@@ -393,6 +451,35 @@ export interface InvitationDesignResponse {
     design: Design;
     templates: Record<string, TemplateDefinition>;
     fonts: Record<string, string>;
+}
+
+export type PublicPassState =
+    | 'valid'
+    | 'pending'
+    | 'declined'
+    | 'not_active'
+    | 'not_yet'
+    | 'expired'
+    | 'revoked'
+    | 'disabled'
+    | 'unavailable';
+
+export interface PublicPass {
+    guest: { name: string };
+    event: {
+        title: string;
+        event_start: string | null;
+        timezone: string;
+        venue: string;
+    } | null;
+    pass: {
+        state: PublicPassState;
+        credential_status: string | null;
+        qr_available: boolean;
+        valid_from: string | null;
+        valid_until: string | null;
+        entry_code_note: string;
+    };
 }
 
 export interface PublicInvite {

@@ -22,7 +22,14 @@ class SendInvitationJob implements ShouldQueue
 
     public int $tries = 3;
 
-    public function __construct(public Guest $guest) {}
+    /**
+     * @param  list<string>  $channels  Empty means the configured channel set.
+     */
+    public function __construct(
+        public Guest $guest,
+        public array $channels = [],
+        public ?int $deliveryId = null,
+    ) {}
 
     public function handle(): void
     {
@@ -34,6 +41,8 @@ class SendInvitationJob implements ShouldQueue
 
         // Idempotency: a duplicate job for an already-sent guest must not resend.
         if ($guest->sent_at !== null) {
+            $this->failQueuedRow('No invitation was sent because a provider already accepted one for this guest.');
+
             return;
         }
 
@@ -61,11 +70,16 @@ class SendInvitationJob implements ShouldQueue
     private function deliver(Guest $guest): void
     {
         $notification = new InvitationNotification($guest->event, $guest->invite_url_absolute);
+
+        if ($this->channels !== []) {
+            $notification->onlyChannels($this->channels);
+        }
+
         $channels = $notification->via($guest);
 
         if ($channels === []) {
-            // No configured channel is available, or the Delivery Lab blocked
-            // this recipient. Do not send and do not mark the guest as notified.
+            $this->failQueuedRow('No message was sent because the selected channel is unavailable for this recipient.');
+
             return;
         }
 
@@ -74,6 +88,7 @@ class SendInvitationJob implements ShouldQueue
         $reuseExisting = $this->attempts() > 1;
         $pending = [];
         $rows = [];
+        $precreated = $this->precreatedRow($guest);
 
         foreach ($channels as $channel) {
             $mapped = match ($channel) {
@@ -87,7 +102,9 @@ class SendInvitationJob implements ShouldQueue
                 continue;
             }
 
-            $delivery = InvitationDelivery::openFor($guest->id, 'invitation', $mapped, $reuseExisting);
+            $delivery = $precreated && $precreated->channel === $mapped
+                ? $precreated
+                : InvitationDelivery::openFor($guest->id, 'invitation', $mapped, $reuseExisting);
 
             if ($delivery->isCompleted()) {
                 // Already accepted/delivered on a previous attempt: never resend.
@@ -100,6 +117,12 @@ class SendInvitationJob implements ShouldQueue
         }
 
         if ($pending === []) {
+            if ($precreated && $precreated->status === 'queued') {
+                $this->failQueuedRow('No invitation was sent because the selected channel did not produce a new delivery attempt.');
+
+                return;
+            }
+
             $guest->forceFill(['sent_at' => now()])->save();
 
             return;
@@ -163,6 +186,41 @@ class SendInvitationJob implements ShouldQueue
             ->whereIn('id', array_map(static fn (InvitationDelivery $row) => $row->id, $rows))
             ->whereIn('status', ['sent', 'delivered'])
             ->exists();
+    }
+
+    private function precreatedRow(Guest $guest): ?InvitationDelivery
+    {
+        if ($this->deliveryId === null) {
+            return null;
+        }
+
+        $delivery = InvitationDelivery::find($this->deliveryId);
+
+        return $delivery
+            && $delivery->guest_id === $guest->id
+            && $delivery->kind === 'invitation'
+            && in_array($delivery->channel, $this->channels, true)
+                ? $delivery
+                : null;
+    }
+
+    private function failQueuedRow(string $reason): void
+    {
+        if ($this->deliveryId === null) {
+            return;
+        }
+
+        $delivery = InvitationDelivery::find($this->deliveryId);
+
+        if (! $delivery || $delivery->status !== 'queued') {
+            return;
+        }
+
+        $delivery->forceFill([
+            'status' => 'failed',
+            'failed_at' => now(),
+            'error' => $reason,
+        ])->save();
     }
 
     public function failed(Throwable $exception): void

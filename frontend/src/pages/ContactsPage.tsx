@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { api, apiErrorMessage, validationErrors } from '../lib/api';
 import type { Contact, ContactPage } from '../lib/types';
 import { useRequestGuard } from '../lib/useRequestGuard';
-import { Alert, Field, LoadingBlock } from '../components/ui';
+import { Alert, EmptyState, Field, LoadingBlock, PageHeading } from '../components/ui';
 import { Modal } from '../components/Modal';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { ActionMenu } from '../components/ActionMenu';
@@ -88,9 +88,11 @@ export function ContactsPage() {
         void load(1, '', DEFAULT_PAGE_SIZE);
     }, [load]);
 
-    const applySearch = () => {
-        setAppliedSearch(search);
-        void load(1, search, pageSize);
+    const applySearch = (event?: React.FormEvent) => {
+        event?.preventDefault();
+        const term = search.trim();
+        setAppliedSearch(term);
+        void load(1, term, pageSize);
     };
 
     const clearFilters = () => {
@@ -159,25 +161,22 @@ export function ContactsPage() {
     };
 
     const hasFilters = appliedSearch !== '';
+    const initialLoadError = !loading && error !== null && contacts.length === 0;
 
     return (
         <div className="stack">
-            <header className="page-head">
-                <div>
-                    <h1>Contacts</h1>
-                    <p className="muted page-sub">
-                        Reusable contacts shared by your event guests. Editing a contact never changes a guest record.
-                    </p>
-                </div>
-            </header>
+            <PageHeading
+                title="Contacts"
+                description="Reusable people records linked to guests across your events. Contact details and event guest details remain separate."
+            />
 
             {toast ? <Alert kind="success">{toast}</Alert> : null}
-            {error ? <Alert kind="error">{error}</Alert> : null}
+            {error && !initialLoadError ? <Alert kind="error">{error}</Alert> : null}
 
-            <div className="toolbar">
+            <form className="toolbar contact-search" role="search" onSubmit={applySearch}>
                 <div className="search-field">
                     <label className="label" htmlFor="contact-search">
-                        Search
+                        Find a contact
                     </label>
                     <input
                         id="contact-search"
@@ -186,59 +185,82 @@ export function ContactsPage() {
                         placeholder="Name, email, or phone"
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && applySearch()}
                     />
                 </div>
-                <button type="button" className="btn btn-ghost" onClick={applySearch}>
-                    Apply
+                <button type="submit" className="btn btn-ghost" disabled={loading}>
+                    Search
                 </button>
                 {hasFilters ? (
-                    <button type="button" className="btn btn-link" onClick={clearFilters}>
-                        Clear
+                    <button type="button" className="btn btn-link" onClick={clearFilters} disabled={loading}>
+                        Clear search
                     </button>
                 ) : null}
-            </div>
+            </form>
 
             {loading ? (
-                <div className="card">
+                <section className="list-loading" aria-label="Loading contacts" aria-busy="true">
                     <LoadingBlock label="Loading contacts…" />
-                </div>
+                </section>
+            ) : initialLoadError ? (
+                <section className="page-state page-state-error" aria-label="Contacts could not be loaded">
+                    <h2>We couldn’t load contacts</h2>
+                    <p className="muted">Check your connection, then try again.</p>
+                    <button type="button" className="btn btn-ghost" onClick={() => void load(1, appliedSearch, pageSize)}>
+                        Try again
+                    </button>
+                </section>
             ) : contacts.length === 0 ? (
-                <div className="card empty-state">
-                    <h3>{hasFilters ? 'No contacts match this search' : 'No contacts yet'}</h3>
-                    <p className="muted">
-                        {hasFilters
-                            ? 'Try a different name, email, or phone number.'
-                            : 'Contacts are created automatically when you add guests to an event.'}
-                    </p>
-                    {hasFilters ? (
-                        <button type="button" className="btn btn-ghost" onClick={clearFilters}>
-                            Clear search
-                        </button>
-                    ) : null}
-                </div>
+                <EmptyState
+                    title={hasFilters ? 'No contacts match this search' : 'Contacts appear as you manage guests'}
+                    description={
+                        hasFilters
+                            ? 'Try a different name, email, or phone number, or clear the search.'
+                            : 'Contacts are created through guest workflows. Add a guest to an event to start a contact record.'
+                    }
+                    action={
+                        hasFilters ? (
+                            <button type="button" className="btn btn-ghost" onClick={clearFilters}>
+                                Clear search
+                            </button>
+                        ) : (
+                            <Link className="btn btn-ghost" to="/dashboard">
+                                View events
+                            </Link>
+                        )
+                    }
+                />
             ) : (
-                <div className="table-wrap">
+                <div className="table-wrap contact-table-wrap">
                     <table>
+                        <caption className="visually-hidden">Contacts and their linked event guests</caption>
                         <thead>
                             <tr>
-                                <th>Name</th>
-                                <th className="col-hide-sm">Email</th>
-                                <th className="col-hide-sm">Phone</th>
-                                <th>Guests</th>
-                                <th style={{ textAlign: 'right' }}>Actions</th>
+                                <th scope="col">Contact</th>
+                                <th scope="col" className="col-hide-sm">Email</th>
+                                <th scope="col" className="col-hide-sm">Phone</th>
+                                <th scope="col">Linked guests</th>
+                                <th scope="col" className="table-actions-heading">Actions</th>
                             </tr>
                         </thead>
                         <tbody>
                             {contacts.map((contact) => (
                                 <tr key={contact.id}>
                                     <td className="cell-strong">
-                                        <Link to={`/contacts/${contact.id}`}>{contact.name}</Link>
+                                        <Link className="contact-name-link" to={`/contacts/${contact.id}`}>{contact.name}</Link>
+                                        <span className="contact-mobile-details">
+                                            <span>{contact.email || 'No email'}</span>
+                                            <span>{contact.phone || 'No phone'}</span>
+                                        </span>
                                     </td>
-                                    <td className="muted col-hide-sm">{contact.email || '—'}</td>
-                                    <td className="muted col-hide-sm">{contact.phone || '—'}</td>
-                                    <td className="muted">{contact.guests_count}</td>
-                                    <td style={{ textAlign: 'right' }}>
+                                    <td className="muted col-hide-sm contact-value">{contact.email || '—'}</td>
+                                    <td className="muted col-hide-sm contact-value">{contact.phone || '—'}</td>
+                                    <td className="contact-linked-count">
+                                        <span className="count">
+                                            <strong>{contact.guests_count}</strong>{' '}
+                                            {contact.guests_count === 1 ? 'guest' : 'guests'}
+                                        </span>
+                                    </td>
+                                    <td className="table-actions-cell">
                                         <ActionMenu
                                             label={`Actions for ${contact.name}`}
                                             items={[
@@ -255,7 +277,7 @@ export function ContactsPage() {
             )}
 
             {pagination && (pagination.total ?? 0) > 0 ? (
-                <div className="row between pagination" aria-label="Contacts pagination">
+                <nav className="row between pagination" aria-label="Contacts pagination">
                     <div className="row" style={{ gap: '0.75rem', alignItems: 'center' }}>
                         <span className="muted">
                             Page {pagination.current_page} of {pagination.last_page} · {pagination.total ?? 0} contact
@@ -273,6 +295,7 @@ export function ContactsPage() {
                                 style={{ width: 'auto' }}
                                 value={pageSize}
                                 onChange={(e) => changePageSize(Number(e.target.value))}
+                                disabled={loading}
                             >
                                 {PAGE_SIZE_OPTIONS.map((size) => (
                                     <option key={size} value={size}>
@@ -286,7 +309,7 @@ export function ContactsPage() {
                         <button
                             type="button"
                             className="btn btn-sm btn-ghost"
-                            disabled={!pagination.prev_page_url}
+                            disabled={!pagination.prev_page_url || loading}
                             onClick={() => void load(pagination.current_page - 1, appliedSearch, pageSize)}
                         >
                             Previous
@@ -294,13 +317,13 @@ export function ContactsPage() {
                         <button
                             type="button"
                             className="btn btn-sm btn-ghost"
-                            disabled={!pagination.next_page_url}
+                            disabled={!pagination.next_page_url || loading}
                             onClick={() => void load(pagination.current_page + 1, appliedSearch, pageSize)}
                         >
                             Next
                         </button>
                     </div>
-                </div>
+                </nav>
             ) : null}
 
             <Modal

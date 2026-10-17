@@ -44,6 +44,18 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Browser-test mode
+    |--------------------------------------------------------------------------
+    |
+    | This flag is only enabled by the guarded Playwright web server. It is
+    | never enabled by local development or production configuration.
+    |
+    */
+
+    'browser_testing' => (bool) env('BROWSER_TESTING', false),
+
+    /*
+    |--------------------------------------------------------------------------
     | Application URL
     |--------------------------------------------------------------------------
     |

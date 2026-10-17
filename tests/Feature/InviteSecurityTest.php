@@ -49,6 +49,22 @@ class InviteSecurityTest extends TestCase
         $this->getJson($url)->assertStatus(429);
     }
 
+    public function test_pass_routes_share_the_invite_token_rate_limiter(): void
+    {
+        config([
+            'invitations.rate_limits.invite_token_ip_per_minute' => 2,
+            'invitations.rate_limits.invite_token_per_minute' => 100,
+        ]);
+
+        foreach (['pass-one', 'pass-two'] as $token) {
+            $this->getJson(route('api.invites.pass', ['token' => $token]))
+                ->assertNotFound();
+        }
+
+        $this->getJson(route('api.invites.pass', ['token' => 'pass-three']))
+            ->assertStatus(429);
+    }
+
     public function test_verification_endpoint_is_rate_limited_per_operator(): void
     {
         config(['invitations.rate_limits.admin_read_per_minute' => 2]);

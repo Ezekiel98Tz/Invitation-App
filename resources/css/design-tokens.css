@@ -1,0 +1,93 @@
+:root {
+    color-scheme: light;
+    caret-color: var(--color-accent);
+
+    --color-canvas: #f4f6f3;
+    --color-surface: #ffffff;
+    --color-surface-subtle: #eef2ee;
+    --color-text: #1f2b28;
+    --color-muted: #586661;
+    --color-border: #dae1dc;
+    --color-accent: #245e52;
+    --color-accent-hover: #1c4b42;
+    --color-accent-soft: #e7f0ec;
+    --color-focus: #245e52;
+    --color-focus-ring: rgb(36 94 82 / 28%);
+    --color-disabled: #53615b;
+    --color-disabled-surface: #e7ece8;
+
+    --color-success: #235d3f;
+    --color-success-soft: #eaf3ed;
+    --color-success-border: #c7ddce;
+    --color-warning: #765000;
+    --color-warning-soft: #fbf2d8;
+    --color-warning-border: #e5d4a2;
+    --color-danger: #943b36;
+    --color-danger-hover: #7e302c;
+    --color-danger-soft: #f8eae8;
+    --color-danger-border: #e7c5c1;
+    --color-danger-on-dark: #ffc6c1;
+    --color-info: #285c75;
+    --color-info-soft: #eaf2f6;
+    --color-info-border: #c7d9e2;
+
+    --font-ui: 'Figtree', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --font-editorial: 'Playfair Display', Georgia, 'Times New Roman', serif;
+    --font-size-body: 1rem;
+    --line-height-body: 1.5;
+
+    --space-1: 0.25rem;
+    --space-2: 0.5rem;
+    --space-3: 0.75rem;
+    --space-4: 1rem;
+    --space-5: 1.25rem;
+    --space-6: 1.5rem;
+    --space-8: 2rem;
+    --space-10: 2.5rem;
+    --space-12: 3rem;
+
+    --radius-sm: 6px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --radius-pill: 999px;
+    --control-height: 44px;
+    --control-height-compact: 36px;
+
+    --content-max-width: 1280px;
+    --shadow-card: 0 4px 14px rgb(31 43 40 / 5%);
+    --shadow-overlay: 0 14px 36px rgb(31 43 40 / 16%);
+    --transition-fast: 150ms ease;
+    --transition-standard: 200ms ease;
+}
+
+::selection {
+    color: var(--color-text);
+    background: var(--color-accent-soft);
+}
+
+html {
+    -webkit-tap-highlight-color: transparent;
+}
+
+button,
+a,
+[role='button'] {
+    touch-action: manipulation;
+}
+
+button,
+[role='button'] {
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        scroll-behavior: auto !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+}

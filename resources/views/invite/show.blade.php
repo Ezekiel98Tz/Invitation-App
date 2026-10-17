@@ -9,6 +9,7 @@
         x-data="inviteRsvp({
             submitUrl: '{{ route('invites.store', ['token' => $guest->invite_token], absolute: false) }}',
             inviteUrl: '{{ route('invites.show', ['token' => $guest->invite_token], absolute: false) }}',
+            passUrl: '{{ url('/e/'.$guest->invite_token.'/pass') }}',
             allowPlusOnes: {{ $allowPlusOnes ? 'true' : 'false' }},
             customQuestions: @js($customQuestions),
             initial: {
@@ -51,6 +52,14 @@
                     Refresh
                 </a>
             </div>
+
+            <a
+                x-show="confirmedData.status === 'accepted'"
+                class="inline-flex items-center justify-center rounded-md border border-transparent bg-studio-accent px-4 py-2 text-sm font-medium text-white hover:bg-studio-accent-hover"
+                :href="passUrl"
+            >
+                View event pass
+            </a>
         </div>
 
         <div class="space-y-2 text-sm text-gray-700">
@@ -175,6 +184,7 @@
             return {
                 submitUrl: config.submitUrl,
                 inviteUrl: config.inviteUrl,
+                passUrl: config.passUrl,
                 allowPlusOnes: config.allowPlusOnes,
                 customQuestions: config.customQuestions || [],
                 form: {

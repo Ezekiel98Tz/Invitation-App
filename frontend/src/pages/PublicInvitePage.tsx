@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { api, apiErrorMessage, validationErrors } from '../lib/api';
 import type { PublicInvite } from '../lib/types';
 import { Alert, LoadingBlock } from '../components/ui';
@@ -69,15 +69,43 @@ export function PublicInvitePage() {
 
     if (loading) return <div className="center-screen"><LoadingBlock label="Loading invitation…" /></div>;
     if (notFound) return <div className="center-screen"><div className="card"><h2>Invitation not found</h2></div></div>;
-    if (expired) return <div className="center-screen"><div className="card"><h2>This invitation has closed</h2><p className="muted">RSVPs are no longer accepted.</p></div></div>;
+    if (expired) {
+        return (
+            <div className="center-screen">
+                <div className="card stack">
+                    <div>
+                        <h2>This invitation has closed</h2>
+                        <p className="muted">RSVPs are no longer accepted.</p>
+                    </div>
+                    <Link className="btn btn-primary" to={`/e/${token}/pass`}>
+                        View event pass
+                    </Link>
+                </div>
+            </div>
+        );
+    }
     if (!invite) return <div className="center-screen"><Alert kind="error">{error ?? 'Unable to load invitation.'}</Alert></div>;
 
     const design = invite.settings.design;
+    const currentStatus = confirmed ? status : invite.guest.status;
+    const showPassLink = currentStatus === 'accepted';
 
     return (
         <div className="center-screen" style={{ alignItems: 'flex-start', paddingTop: '2rem' }}>
             <div className="stack" style={{ width: '100%', maxWidth: 640 }}>
                 <TemplatePreview event={invite.event} design={design} guestName={invite.guest.name} />
+
+                {showPassLink ? (
+                    <section className="public-pass-link" aria-label="Event pass">
+                        <div>
+                            <strong>Your event pass</strong>
+                            <p className="muted small">The pass is separate from this RSVP page.</p>
+                        </div>
+                        <Link className="btn btn-primary" to={`/e/${token}/pass`}>
+                            View event pass
+                        </Link>
+                    </section>
+                ) : null}
 
                 <div className="card">
                     {confirmed ? (

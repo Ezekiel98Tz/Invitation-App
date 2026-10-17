@@ -10,6 +10,7 @@
         x-data="inviteRsvp({
             submitUrl: '{{ route('invites.store', ['token' => $guest->invite_token], absolute: false) }}',
             inviteUrl: '{{ route('invites.show', ['token' => $guest->invite_token], absolute: false) }}',
+            passUrl: '{{ url('/e/'.$guest->invite_token.'/pass') }}',
             allowPlusOnes: {{ $allowPlusOnes ? 'true' : 'false' }},
             customQuestions: @js($customQuestions),
             initial: {
@@ -27,6 +28,15 @@
 
         <div x-show="!confirmed" x-cloak class="rounded-md bg-blue-50 p-3 text-sm text-blue-700">
             You already responded. You can update your RSVP until the event starts.
+        </div>
+
+        <div x-show="!confirmed && form.status === 'accepted'" class="text-center">
+            <a
+                class="inline-flex items-center justify-center rounded-md border border-transparent bg-studio-accent px-4 py-2 text-sm font-medium text-white hover:bg-studio-accent-hover"
+                :href="passUrl"
+            >
+                View event pass
+            </a>
         </div>
 
         <div x-show="confirmed" x-cloak class="space-y-4 text-center">
@@ -56,6 +66,14 @@
                     Refresh
                 </a>
             </div>
+
+            <a
+                x-show="confirmedData.status === 'accepted'"
+                class="inline-flex items-center justify-center rounded-md border border-transparent bg-studio-accent px-4 py-2 text-sm font-medium text-white hover:bg-studio-accent-hover"
+                :href="passUrl"
+            >
+                View event pass
+            </a>
         </div>
 
         <form x-show="!confirmed" x-cloak class="space-y-4" method="POST" action="{{ route('invites.store', ['token' => $guest->invite_token], absolute: false) }}" x-on:submit.prevent="submit">
@@ -171,6 +189,7 @@
             return {
                 submitUrl: config.submitUrl,
                 inviteUrl: config.inviteUrl,
+                passUrl: config.passUrl,
                 allowPlusOnes: config.allowPlusOnes,
                 customQuestions: config.customQuestions || [],
                 form: {

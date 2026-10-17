@@ -231,6 +231,7 @@ class OperationalPaginationTest extends TestCase
             'api.reports.events',
             'api.events.deliveries',
             'api.events.deliveries.failed',
+            'api.events.communication.channels',
             'api.events.invitations.preview',
             'api.delivery-lab.index',
             'api.events.attendances.index',

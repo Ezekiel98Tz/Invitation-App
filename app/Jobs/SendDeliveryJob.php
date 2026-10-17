@@ -27,6 +27,7 @@ class SendDeliveryJob implements ShouldQueue
         public string $kind,
         public string $channel,
         public ?int $retryOf = null,
+        public ?int $deliveryId = null,
     ) {}
 
     public function handle(): void
@@ -44,6 +45,8 @@ class SendDeliveryJob implements ShouldQueue
         };
 
         if (! $notification) {
+            $this->failQueuedRow('The delivery could not be prepared because the message type is unsupported.');
+
             return;
         }
 
@@ -51,6 +54,8 @@ class SendDeliveryJob implements ShouldQueue
 
         // Skip when the channel is not configured, or the Delivery Lab blocked it.
         if ($notification->via($guest) === []) {
+            $this->failQueuedRow('The selected channel is unavailable for this recipient.');
+
             return;
         }
 
@@ -58,7 +63,20 @@ class SendDeliveryJob implements ShouldQueue
         // explicit retry never creates duplicate records.
         $delivery = null;
 
-        if ($this->attempts() > 1) {
+        if ($this->deliveryId !== null) {
+            $delivery = InvitationDelivery::find($this->deliveryId);
+
+            if (
+                $delivery
+                && ($delivery->guest_id !== $guest->id
+                    || $delivery->kind !== $this->kind
+                    || $delivery->channel !== $this->channel)
+            ) {
+                $delivery = null;
+            }
+        }
+
+        if (! $delivery && $this->attempts() > 1) {
             $delivery = InvitationDelivery::query()
                 ->where('guest_id', $guest->id)
                 ->where('kind', $this->kind)
@@ -107,6 +125,25 @@ class SendDeliveryJob implements ShouldQueue
         }
     }
 
+    private function failQueuedRow(string $reason): void
+    {
+        if ($this->deliveryId === null) {
+            return;
+        }
+
+        $delivery = InvitationDelivery::find($this->deliveryId);
+
+        if (! $delivery || $delivery->status !== 'queued') {
+            return;
+        }
+
+        $delivery->forceFill([
+            'status' => 'failed',
+            'failed_at' => now(),
+            'error' => $reason,
+        ])->save();
+    }
+
     public function failed(Throwable $exception): void
     {
         $guest = Guest::with(['event.user'])->find($this->guest->id);
@@ -120,7 +157,7 @@ class SendDeliveryJob implements ShouldQueue
             $guest,
             $this->kind,
             $this->channel,
-            $exception->getMessage()
+            MailDelivery::message($exception)
         ));
     }
 }

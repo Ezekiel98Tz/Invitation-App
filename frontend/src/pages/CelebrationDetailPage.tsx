@@ -2,17 +2,30 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api, apiErrorMessage } from '../lib/api';
 import type { CelebrationDetail, CelebrationPledgeReport, EventItem, Paginated } from '../lib/types';
-import { Alert, LoadingBlock } from '../components/ui';
+import { Alert, EmptyState, LoadingBlock, PageHeading } from '../components/ui';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { EventFormModal } from '../components/EventFormModal';
 import { PledgeSummary } from '../components/PledgeSummary';
 import { formatMoney } from '../lib/money';
 import { useRequestGuard } from '../lib/useRequestGuard';
 
-function formatWhen(iso: string | null | undefined): string {
+function formatWhen(iso: string | null | undefined, timezone?: string | null): string {
     if (!iso) return 'Date not set';
     const d = new Date(iso);
-    return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+    if (Number.isNaN(d.getTime())) return iso;
+    try {
+        return new Intl.DateTimeFormat('en-GB', {
+            weekday: 'short',
+            day: 'numeric',
+            month: 'short',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            timeZone: timezone || undefined,
+        }).format(d);
+    } catch {
+        return d.toLocaleString();
+    }
 }
 
 export function CelebrationDetailPage() {
@@ -21,6 +34,7 @@ export function CelebrationDetailPage() {
 
     const [detail, setDetail] = useState<CelebrationDetail | null>(null);
     const [loading, setLoading] = useState(true);
+    const [detailError, setDetailError] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [toast, setToast] = useState<string | null>(null);
 
@@ -29,6 +43,7 @@ export function CelebrationDetailPage() {
     const [candidates, setCandidates] = useState<EventItem[]>([]);
     const [candidatesMeta, setCandidatesMeta] = useState<Paginated<EventItem> | null>(null);
     const [candidatesLoading, setCandidatesLoading] = useState(false);
+    const [candidatesError, setCandidatesError] = useState<string | null>(null);
     const [candidateSearch, setCandidateSearch] = useState('');
     const [appliedSearch, setAppliedSearch] = useState('');
     const [addBusyId, setAddBusyId] = useState<number | null>(null);
@@ -52,7 +67,7 @@ export function CelebrationDetailPage() {
     const loadDetail = useCallback(async (page = 1) => {
         const { signal, isCurrent } = detailGuard();
         setLoading(true);
-        setError(null);
+        setDetailError(null);
         try {
             const { data } = await api.get<CelebrationDetail>(`/api/v1/celebrations/${celebrationId}`, {
                 params: { page },
@@ -62,7 +77,7 @@ export function CelebrationDetailPage() {
             setDetail(data);
         } catch (err) {
             if (signal.aborted || !isCurrent()) return;
-            setError(apiErrorMessage(err));
+            setDetailError(apiErrorMessage(err));
         } finally {
             if (isCurrent()) setLoading(false);
         }
@@ -73,6 +88,7 @@ export function CelebrationDetailPage() {
     const loadCandidates = useCallback(async (page = 1, search = '') => {
         const { signal, isCurrent } = candidatesGuard();
         setCandidatesLoading(true);
+        setCandidatesError(null);
         try {
             const { data } = await api.get<Paginated<EventItem>>('/api/v1/events', {
                 params: { standalone: 1, page, search },
@@ -83,7 +99,7 @@ export function CelebrationDetailPage() {
             setCandidatesMeta(data);
         } catch (err) {
             if (signal.aborted || !isCurrent()) return;
-            setError(apiErrorMessage(err));
+            setCandidatesError(apiErrorMessage(err));
         } finally {
             if (isCurrent()) setCandidatesLoading(false);
         }
@@ -162,77 +178,101 @@ export function CelebrationDetailPage() {
     };
 
     if (loading) return <LoadingBlock label="Loading celebration…" />;
-    if (!detail) return <Alert kind="error">{error ?? 'Unable to load this celebration.'}</Alert>;
+    if (!detail) {
+        return (
+            <section className="page-state page-state-error" aria-label="Celebration could not be loaded">
+                <Alert kind="error">{detailError ?? 'Unable to load this celebration.'}</Alert>
+                <button type="button" className="btn btn-ghost" onClick={() => void loadDetail(1)}>
+                    Try again
+                </button>
+                <Link to="/celebrations" className="muted">Back to celebrations</Link>
+            </section>
+        );
+    }
 
     const events = detail.events;
     const hasSearch = appliedSearch !== '';
 
     return (
-        <div className="stack">
-            <header className="page-head">
-                <div>
-                    <Link to="/celebrations" className="muted">
-                        ← Back to celebrations
-                    </Link>
-                    <h1 style={{ marginTop: '0.5rem' }}>{detail.celebration.name}</h1>
-                    {detail.celebration.description ? (
-                        <p className="muted page-sub">{detail.celebration.description}</p>
-                    ) : null}
-                </div>
-                <button type="button" className="btn btn-primary" onClick={() => setCreateOpen(true)}>
-                    Create event in this celebration
-                </button>
-            </header>
+        <div className="stack celebration-detail-page">
+            <Link to="/celebrations" className="detail-back-link">Back to celebrations</Link>
+            <PageHeading
+                title={detail.celebration.name}
+                description={
+                    <span className="celebration-heading-description">
+                        {detail.celebration.description || 'A grouping for related occasions.'}
+                        <span>Events remain independent: each has its own date, venue, guests, invitation, and RSVP.</span>
+                    </span>
+                }
+                actions={
+                    <button type="button" className="btn btn-primary" onClick={() => setCreateOpen(true)}>
+                        Create event here
+                    </button>
+                }
+            />
 
             {toast ? <Alert kind="success">{toast}</Alert> : null}
             {error ? <Alert kind="error">{error}</Alert> : null}
 
-            <div className="card">
-                <h3 style={{ marginTop: 0 }}>Grouped events</h3>
+            <section className="celebration-events-section" aria-labelledby="celebration-events-title">
+                <header className="section-head">
+                    <div>
+                        <h2 id="celebration-events-title">Events in this celebration</h2>
+                        <p className="muted section-sub">
+                            {detail.events_meta.total} event{detail.events_meta.total === 1 ? '' : 's'} · event details stay separate
+                        </p>
+                    </div>
+                </header>
                 {events.length === 0 ? (
-                    <p className="muted">
-                        No events in this celebration yet. Create one above, or add an existing standalone event below.
-                    </p>
+                    <EmptyState
+                        title="No events in this celebration yet"
+                        description="Create an event directly in this group, or add an existing standalone event below."
+                        action={
+                            <div className="row empty-state-actions-row">
+                                <button type="button" className="btn btn-primary" onClick={() => setCreateOpen(true)}>
+                                    Create event here
+                                </button>
+                                <a className="btn btn-ghost" href="#standalone-events">
+                                    Add an existing event
+                                </a>
+                            </div>
+                        }
+                    />
                 ) : (
-                    <div className="table-wrap">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>Event</th>
-                                    <th className="col-hide-sm">When</th>
-                                    <th className="col-hide-sm">Venue</th>
-                                    <th style={{ textAlign: 'right' }}>Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {events.map((event) => (
-                                    <tr key={event.id}>
-                                        <td className="cell-strong">
-                                            <Link to={`/events/${event.id}`}>{event.title}</Link>
-                                        </td>
-                                        <td className="muted col-hide-sm">{formatWhen(event.event_start)}</td>
-                                        <td className="muted col-hide-sm">{event.venue || '—'}</td>
-                                        <td style={{ textAlign: 'right' }}>
-                                            <button
-                                                type="button"
-                                                className="btn btn-sm btn-ghost"
-                                                onClick={() => setRemoveTarget(event)}
-                                                disabled={removing}
-                                            >
-                                                Remove
-                                            </button>
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
+                    <div className="celebration-event-list">
+                        {events.map((event) => (
+                            <article className="celebration-event-row" key={event.id}>
+                                <div className="celebration-event-copy">
+                                    <Link className="celebration-event-title" to={`/events/${event.id}`}>
+                                        {event.title}
+                                    </Link>
+                                    <div className="celebration-event-meta">
+                                        {event.event_type ? <span>{event.event_type.replace(/[_-]+/g, ' ')}</span> : null}
+                                        <span>{formatWhen(event.event_start, event.timezone)}</span>
+                                        <span>{event.venue || 'Venue not set'}</span>
+                                    </div>
+                                </div>
+                                <div className="row celebration-event-actions">
+                                    <Link className="btn btn-ghost btn-sm" to={`/events/${event.id}`}>
+                                        Manage event
+                                    </Link>
+                                    <button
+                                        type="button"
+                                        className="btn btn-ghost btn-sm"
+                                        onClick={() => setRemoveTarget(event)}
+                                        disabled={removing}
+                                    >
+                                        Remove from group
+                                    </button>
+                                </div>
+                            </article>
+                        ))}
                     </div>
                 )}
 
                 {detail.events_meta.total > 0 ? (
-                    <div
+                    <nav
                         className="row between pagination"
-                        style={{ marginTop: '0.75rem' }}
                         aria-label="Grouped events pagination"
                     >
                         <span className="muted small">
@@ -243,7 +283,7 @@ export function CelebrationDetailPage() {
                             <button
                                 type="button"
                                 className="btn btn-sm btn-ghost"
-                                disabled={!detail.events_meta.prev_page_url}
+                                disabled={!detail.events_meta.prev_page_url || loading}
                                 onClick={() => void loadDetail(detail.events_meta.current_page - 1)}
                             >
                                 Previous
@@ -251,27 +291,30 @@ export function CelebrationDetailPage() {
                             <button
                                 type="button"
                                 className="btn btn-sm btn-ghost"
-                                disabled={!detail.events_meta.next_page_url}
+                                disabled={!detail.events_meta.next_page_url || loading}
                                 onClick={() => void loadDetail(detail.events_meta.current_page + 1)}
                             >
                                 Next
                             </button>
                         </div>
-                    </div>
+                    </nav>
                 ) : null}
-            </div>
+            </section>
 
-            <div className="card">
-                <h3 style={{ marginTop: 0 }}>Add an existing standalone event</h3>
-                <p className="muted" style={{ marginTop: 0 }}>
-                    Only events that are not already part of a celebration are listed. Adding an event does not copy
-                    it; its guests, invitation design, RSVPs, and delivery history stay with the event.
-                </p>
+            <section id="standalone-events" className="celebration-candidates-section" aria-labelledby="standalone-events-title">
+                <header className="section-head">
+                    <div>
+                        <h2 id="standalone-events-title">Add an existing event</h2>
+                        <p className="muted section-sub">
+                            Only standalone events are shown. Adding one changes its group, not its guests, invitation, RSVPs, or delivery history.
+                        </p>
+                    </div>
+                </header>
 
-                <div className="toolbar">
+                <form className="toolbar candidate-search" role="search" onSubmit={(event) => { event.preventDefault(); applySearch(); }}>
                     <div className="search-field">
                         <label className="label" htmlFor="candidate-search">
-                            Search
+                            Find a standalone event
                         </label>
                         <input
                             id="candidate-search"
@@ -280,81 +323,104 @@ export function CelebrationDetailPage() {
                             placeholder="Event title"
                             value={candidateSearch}
                             onChange={(e) => setCandidateSearch(e.target.value)}
-                            onKeyDown={(e) => e.key === 'Enter' && applySearch()}
                         />
                     </div>
-                    <button type="button" className="btn btn-ghost" onClick={applySearch} disabled={candidatesLoading}>
-                        Apply
+                    <button type="submit" className="btn btn-ghost" disabled={candidatesLoading}>
+                        Search
                     </button>
                     {hasSearch ? (
                         <button
                             type="button"
                             className="btn btn-link"
+                            disabled={candidatesLoading}
                             onClick={() => {
                                 setCandidateSearch('');
                                 setAppliedSearch('');
                                 void loadCandidates(1, '');
                             }}
                         >
-                            Clear
+                            Clear search
                         </button>
                     ) : null}
-                </div>
+                </form>
 
                 {candidatesLoading ? (
-                    <LoadingBlock label="Loading events…" />
+                    <div className="list-loading" aria-label="Loading standalone events" aria-busy="true">
+                        <LoadingBlock label="Loading standalone events…" />
+                    </div>
+                ) : candidatesError ? (
+                    <section className="page-state page-state-error" aria-label="Standalone events could not be loaded">
+                        <Alert kind="error">{candidatesError}</Alert>
+                        <button type="button" className="btn btn-ghost" onClick={() => void loadCandidates(candidatesMeta?.current_page ?? 1, appliedSearch)}>
+                            Try again
+                        </button>
+                    </section>
                 ) : candidates.length === 0 ? (
-                    <p className="muted" style={{ marginBottom: 0 }}>
-                        {hasSearch
-                            ? 'No standalone events match this search.'
-                            : 'There are no standalone events available to add. Create one above, or from the dashboard.'}
-                    </p>
+                    <EmptyState
+                        title={hasSearch ? 'No standalone events match this search' : 'No standalone events to add'}
+                        description={
+                            hasSearch
+                                ? 'Try another title or clear the search.'
+                                : 'Create an event in this celebration or make one from the Events workspace.'
+                        }
+                        action={
+                            hasSearch ? (
+                                <button
+                                    type="button"
+                                    className="btn btn-ghost"
+                                    onClick={() => {
+                                        setCandidateSearch('');
+                                        setAppliedSearch('');
+                                        void loadCandidates(1, '');
+                                    }}
+                                >
+                                    Clear search
+                                </button>
+                            ) : (
+                                <button type="button" className="btn btn-primary" onClick={() => setCreateOpen(true)}>
+                                    Create event here
+                                </button>
+                            )
+                        }
+                    />
                 ) : (
-                    <div className="table-wrap">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>Event</th>
-                                    <th className="col-hide-sm">When</th>
-                                    <th className="col-hide-sm">Venue</th>
-                                    <th style={{ textAlign: 'right' }}>Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {candidates.map((event) => (
-                                    <tr key={event.id}>
-                                        <td className="cell-strong">
-                                            <Link to={`/events/${event.id}`}>{event.title}</Link>
-                                        </td>
-                                        <td className="muted col-hide-sm">{formatWhen(event.event_start)}</td>
-                                        <td className="muted col-hide-sm">{event.venue || '—'}</td>
-                                        <td style={{ textAlign: 'right' }}>
-                                            <button
-                                                type="button"
-                                                className="btn btn-sm btn-primary"
-                                                onClick={() => addEvent(event)}
-                                                disabled={addBusyId !== null}
-                                            >
-                                                {addBusyId === event.id ? 'Adding…' : 'Add'}
-                                            </button>
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
+                    <div className="celebration-event-list celebration-candidate-list">
+                        {candidates.map((event) => (
+                            <article className="celebration-event-row" key={event.id}>
+                                <div className="celebration-event-copy">
+                                    <Link className="celebration-event-title" to={`/events/${event.id}`}>
+                                        {event.title}
+                                    </Link>
+                                    <div className="celebration-event-meta">
+                                        {event.event_type ? <span>{event.event_type.replace(/[_-]+/g, ' ')}</span> : null}
+                                        <span>{formatWhen(event.event_start, event.timezone)}</span>
+                                        <span>{event.venue || 'Venue not set'}</span>
+                                    </div>
+                                </div>
+                                <button
+                                    type="button"
+                                    className="btn btn-sm btn-primary"
+                                    onClick={() => addEvent(event)}
+                                    disabled={addBusyId !== null}
+                                >
+                                    {addBusyId === event.id ? 'Adding…' : 'Add to celebration'}
+                                </button>
+                            </article>
+                        ))}
                     </div>
                 )}
 
                 {candidatesMeta && candidatesMeta.last_page > 1 ? (
-                    <div className="row between pagination">
+                    <nav className="row between pagination" aria-label="Standalone events pagination">
                         <span className="muted">
-                            Page {candidatesMeta.current_page} of {candidatesMeta.last_page}
+                            Page {candidatesMeta.current_page} of {candidatesMeta.last_page} · {candidatesMeta.total ?? 0} standalone event
+                            {(candidatesMeta.total ?? 0) === 1 ? '' : 's'}
                         </span>
                         <div className="row">
                             <button
                                 type="button"
                                 className="btn btn-sm btn-ghost"
-                                disabled={!candidatesMeta.prev_page_url}
+                                disabled={!candidatesMeta.prev_page_url || candidatesLoading}
                                 onClick={() => loadCandidates(candidatesMeta.current_page - 1, appliedSearch)}
                             >
                                 Previous
@@ -362,15 +428,15 @@ export function CelebrationDetailPage() {
                             <button
                                 type="button"
                                 className="btn btn-sm btn-ghost"
-                                disabled={!candidatesMeta.next_page_url}
+                                disabled={!candidatesMeta.next_page_url || candidatesLoading}
                                 onClick={() => loadCandidates(candidatesMeta.current_page + 1, appliedSearch)}
                             >
                                 Next
                             </button>
                         </div>
-                    </div>
+                    </nav>
                 ) : null}
-            </div>
+            </section>
 
             {pledgeLoading ? (
                 <div className="card">

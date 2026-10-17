@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api, apiErrorMessage, validationErrors } from '../lib/api';
 import type {
@@ -10,6 +10,7 @@ import type {
 } from '../lib/types';
 import { Alert, LoadingBlock, StatusBadge } from '../components/ui';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { EntryQrScanner } from '../components/EntryQrScanner';
 import { FeatureDisabled } from '../components/FeatureDisabled';
 import { isCapabilityEnabled } from '../lib/capabilities';
 import { useRequestGuard } from '../lib/useRequestGuard';
@@ -99,7 +100,9 @@ export function CheckInPage() {
     const [event, setEvent] = useState<EventItem | null>(null);
     const [eventState, setEventState] = useState<'loading' | 'loaded' | 'failed'>('loading');
 
+    const [lookupMode, setLookupMode] = useState<'manual' | 'qr'>('manual');
     const [code, setCode] = useState('');
+    const [qrReference, setQrReference] = useState<string | null>(null);
     const [lookup, setLookup] = useState<CheckInLookup | null>(null);
     const [looking, setLooking] = useState(false);
     const [lookupError, setLookupError] = useState<string | null>(null);
@@ -121,6 +124,7 @@ export function CheckInPage() {
 
     const [notice, setNotice] = useState<string | null>(null);
     const [actionError, setActionError] = useState<string | null>(null);
+    const resultRef = useRef<HTMLDivElement>(null);
 
     const notify = useCallback((message: string) => {
         setNotice(message);
@@ -167,6 +171,11 @@ export function CheckInPage() {
         void loadEvent();
     }, [loadEvent]);
 
+    useEffect(() => {
+        if (!lookup) return;
+        resultRef.current?.scrollIntoView({ block: 'nearest' });
+    }, [lookup]);
+
     // Wait for the event's capability map before calling the gated attendance
     // endpoint; a disabled feature shows the friendly state instead of a raw
     // 403. If the event could not be read we still try, so a real 403/404 is
@@ -192,6 +201,7 @@ export function CheckInPage() {
         setLookupError(null);
         setActionError(null);
         setLookup(null);
+        setQrReference(null);
         try {
             const { data } = await api.get<CheckInLookup>(`/api/v1/events/${eventId}/check-in/lookup`, {
                 params: { code: trimmed },
@@ -204,9 +214,30 @@ export function CheckInPage() {
         }
     };
 
+    const runQrLookup = async (reference: string) => {
+        setLooking(true);
+        setLookupError(null);
+        setActionError(null);
+        setLookup(null);
+        setCode('');
+        setQrReference(reference);
+
+        try {
+            const { data } = await api.get<CheckInLookup>(`/api/v1/events/${eventId}/check-in/lookup`, {
+                params: { qr_token: reference },
+            });
+            setLookup(data);
+        } catch (err) {
+            setLookupError(describeCheckInError(err, 'QR lookup failed.'));
+        } finally {
+            setLooking(false);
+        }
+    };
+
     const resetLookup = () => {
         setLookup(null);
         setCode('');
+        setQrReference(null);
         setLookupError(null);
         setActionError(null);
     };
@@ -215,10 +246,11 @@ export function CheckInPage() {
         if (!lookup?.guest) return;
         setCheckingIn(true);
         setActionError(null);
+        const viaQr = qrReference !== null;
         try {
             await api.post(`/api/v1/events/${eventId}/guests/${lookup.guest.id}/check-in`, {
-                code: code.trim(),
-                method: 'code',
+                ...(viaQr ? { qr_token: qrReference } : { code: code.trim() }),
+                method: viaQr ? 'qr' : 'code',
             });
             const name = lookup.guest.name;
             setConfirmOpen(false);
@@ -301,7 +333,7 @@ export function CheckInPage() {
                     </Link>
                     <h1 style={{ marginTop: '0.5rem' }}>Check-in</h1>
                     <p className="muted" style={{ marginTop: 0 }}>
-                        {event?.title ?? 'Event'} · look up a guest by their entry code, then confirm the arrival.
+                        {event?.title ?? 'Event'} · scan a pass or enter an entry code, review the result, then confirm the arrival.
                     </p>
                 </div>
                 <button type="button" className="btn btn-ghost" onClick={refreshAttendances} disabled={loadingArrivals}>
@@ -316,39 +348,73 @@ export function CheckInPage() {
                 <section className="card">
                     <h2>Look up a guest</h2>
                     <p className="muted small" style={{ marginTop: 0 }}>
-                        Enter the guest&apos;s short entry code. Looking up a code never records attendance.
+                        Scan a guest pass or enter their short entry code. Validation never records attendance.
                     </p>
-                    <form onSubmit={runLookup}>
-                        <div className="field">
-                            <label className="label" htmlFor="checkin-code">
-                                Entry code
-                            </label>
-                            <input
-                                id="checkin-code"
-                                className="input"
-                                value={code}
-                                onChange={(e) => setCode(e.target.value)}
-                                autoComplete="off"
-                                autoFocus
-                                maxLength={32}
-                                placeholder="e.g. 7K3-QP9"
-                            />
-                        </div>
-                        <div className="row">
-                            <button
-                                type="submit"
-                                className="btn btn-primary"
-                                disabled={looking || code.trim() === ''}
-                            >
-                                {looking ? 'Looking up…' : 'Look up'}
-                            </button>
-                            {lookup || code !== '' ? (
-                                <button type="button" className="btn btn-ghost" onClick={resetLookup}>
-                                    Clear
+
+                    <div className="checkin-modes" role="group" aria-label="Lookup method">
+                        <button
+                            type="button"
+                            className={`btn btn-sm ${lookupMode === 'manual' ? 'btn-primary' : 'btn-ghost'}`}
+                            aria-pressed={lookupMode === 'manual'}
+                            onClick={() => setLookupMode('manual')}
+                        >
+                            Enter code
+                        </button>
+                        <button
+                            type="button"
+                            className={`btn btn-sm ${lookupMode === 'qr' ? 'btn-primary' : 'btn-ghost'}`}
+                            aria-pressed={lookupMode === 'qr'}
+                            onClick={() => setLookupMode('qr')}
+                        >
+                            Scan QR
+                        </button>
+                    </div>
+
+                    {lookupMode === 'manual' ? (
+                        <form onSubmit={runLookup}>
+                            <div className="field">
+                                <label className="label" htmlFor="checkin-code">
+                                    Entry code
+                                </label>
+                                <input
+                                    id="checkin-code"
+                                    className="input"
+                                    value={code}
+                                    onChange={(e) => setCode(e.target.value)}
+                                    autoComplete="off"
+                                    autoFocus
+                                    maxLength={32}
+                                    placeholder="e.g. 7K3-QP9"
+                                />
+                            </div>
+                            <div className="row">
+                                <button
+                                    type="submit"
+                                    className="btn btn-primary"
+                                    disabled={looking || code.trim() === ''}
+                                >
+                                    {looking ? 'Looking up…' : 'Look up'}
                                 </button>
-                            ) : null}
+                                {lookup || code !== '' ? (
+                                    <button type="button" className="btn btn-ghost" onClick={resetLookup}>
+                                        Clear
+                                    </button>
+                                ) : null}
+                            </div>
+                        </form>
+                    ) : lookup || qrReference ? (
+                        <div className="qr-lookup-again">
+                            {looking ? (
+                                <LoadingBlock label="Validating pass…" />
+                            ) : (
+                                <button type="button" className="btn btn-ghost" onClick={resetLookup}>
+                                    Scan another pass
+                                </button>
+                            )}
                         </div>
-                    </form>
+                    ) : (
+                        <EntryQrScanner disabled={looking} onDecoded={runQrLookup} />
+                    )}
 
                     {lookupError ? (
                         <div style={{ marginTop: '1rem' }}>
@@ -358,6 +424,7 @@ export function CheckInPage() {
 
                     {lookup ? (
                         <div
+                            ref={resultRef}
                             className={`state-banner state-${copy.tone}`}
                             role="status"
                             aria-live="polite"
@@ -371,6 +438,10 @@ export function CheckInPage() {
                                     <div>
                                         <dt>Guest</dt>
                                         <dd>{guest.name}</dd>
+                                    </div>
+                                    <div>
+                                        <dt>Event</dt>
+                                        <dd>{event?.title ?? 'This event'}</dd>
                                     </div>
                                     <div>
                                         <dt>RSVP</dt>

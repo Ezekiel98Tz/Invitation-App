@@ -11,6 +11,7 @@ use App\Services\CredentialIssuer;
 use App\Support\AuditLogger;
 use App\Support\CredentialAccess;
 use App\Support\PageSize;
+use App\Support\PassQrReference;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -38,13 +39,23 @@ class CheckInController extends Controller
 
         $data = $request->validate([
             'code' => ['nullable', 'string', 'max:32'],
+            'qr_token' => ['nullable', 'string', 'max:2048'],
             'guest_id' => ['nullable', 'integer'],
         ]);
 
         $guest = null;
         $credential = null;
 
-        if (! empty($data['code'])) {
+        if (! empty($data['qr_token'])) {
+            $credential = PassQrReference::resolve($data['qr_token']);
+
+            if ($credential === null || $credential->event_id !== $event->id) {
+                return response()->json($this->decision($event, null, null));
+            }
+
+            $credential->setRelation('event', $event);
+            $guest = $credential->guest;
+        } elseif (! empty($data['code'])) {
             $credential = $this->issuer->resolve($data['code']);
             $guest = $credential?->guest;
         } elseif (! empty($data['guest_id'])) {
@@ -69,12 +80,14 @@ class CheckInController extends Controller
 
         $data = $request->validate([
             'code' => ['nullable', 'string', 'max:32'],
+            'qr_token' => ['nullable', 'string', 'max:2048'],
             'method' => ['nullable', Rule::in(self::METHODS)],
             'party_size' => ['nullable', 'integer', 'min:1', 'max:20'],
             'note' => ['nullable', 'string', 'max:500'],
         ]);
 
-        $method = $data['method'] ?? Attendance::METHOD_MANUAL;
+        $method = $data['method']
+            ?? (! empty($data['qr_token']) ? Attendance::METHOD_QR : Attendance::METHOD_MANUAL);
 
         $attendance = DB::transaction(function () use ($request, $event, $guest, $data, $method) {
             // Serialise concurrent check-ins for this guest.
@@ -102,8 +115,25 @@ class CheckInController extends Controller
                 if (! empty($data['code'])) {
                     $resolved = $this->issuer->resolve($data['code']);
 
-                    if ($resolved === null || $resolved->guest_id !== $guest->id) {
-                        throw ValidationException::withMessages(['code' => ['The code does not match this guest.']]);
+                    if (
+                        $resolved === null
+                        || $resolved->guest_id !== $guest->id
+                        || $resolved->id !== $credential?->id
+                    ) {
+                        throw ValidationException::withMessages(['code' => ['The code is not the current credential for this guest.']]);
+                    }
+                }
+
+                if (! empty($data['qr_token'])) {
+                    $resolved = PassQrReference::resolve($data['qr_token']);
+
+                    if (
+                        $resolved === null
+                        || $resolved->event_id !== $event->id
+                        || $resolved->guest_id !== $guest->id
+                        || $resolved->id !== $credential?->id
+                    ) {
+                        throw ValidationException::withMessages(['qr_token' => ['The pass is no longer the current credential for this guest.']]);
                     }
                 }
             }
